@@ -123,6 +123,73 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 
 ---
 
+### 🧭 Smart VPNGate V2（新架构 · 开发预览）
+
+项目正在按 [`docs/DESIGN.md`](docs/DESIGN.md) 向**策略驱动的智能出口管理器（Smart Exit Manager）**演进。新架构以独立分层的 `smart_vpngate` Python 包实现，**与现有 `vpngate_manager.py` 并存、互不影响**，逐层交付。
+
+> ⚠️ **当前状态：开发预览。** 上面的一键部署与 Web 面板仍由现有的 AimiliVPN（`vpngate_manager.py`）提供并可正常使用；下面的 `smart_vpngate` 是正在搭建的新内核，目前**仅完成第一层（Discovery）**，尚不能独立完成"自动连接/切换出口"。
+
+#### 分层进度
+
+| 分层 | 职责 | 状态 |
+| --- | --- | --- |
+| **Config** | YAML 配置（discovery/policy/health/dashboard），带类型校验与默认值 | ✅ 已完成 |
+| **Models** | `Node` 数据模型 + 综合评分（非单纯 ping） | ✅ 已完成 |
+| **Provider** | 统一出口接口 `discover/connect/disconnect/status/public_ip`（多 Provider 扩展点） | ✅ 接口就绪 |
+| **Discovery** | 被动式：拉取 → 解析 → 归一化 → 过滤 → 缓存（不连接、不选择、不调度） | ✅ 已完成 |
+| **NodePool** | 分国家节点池、Top50、排序淘汰 | ⏳ 待开发 |
+| **HealthCheck** | Ping/丢包/下载/握手/公网 IP 周期检测 | ⏳ 待开发 |
+| **PolicyEngine** | 锁国家 / 国家优先级 / 粘性 / 故障切换 | ⏳ 待开发 |
+| **ExitManager** | 唯一活动出口的 Connect/Switch/Recover | ⏳ 待开发 |
+| **VPNGate Provider** | 将接口对接现有 OpenVPN 连接逻辑 | ⏳ 待开发 |
+| **Dashboard** | 当前出口 + 节点表 | ⏳ 待开发 |
+
+#### 配置文件
+
+复制模板并按需修改（缺省项自动回退到默认值）：
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+关键字段：`discovery.countries`（国家白名单）、`discovery.blacklist`（黑名单）、`discovery.protocols`、`policy.mode`（`locked-country`/`priority`/`auto`）、`policy.country`、`health.interval`。完整示例见 [`config.example.yaml`](config.example.yaml)。
+
+#### 运行 Discovery（当前可用能力）
+
+拉取官方 VPNGate 节点、按策略过滤并写入缓存：
+
+```bash
+# 依配置在线拉取、过滤、缓存
+python3 -m smart_vpngate discover --config config.yaml
+
+# 离线：从本地 CSV 读取（便于测试，无需联网）
+python3 -m smart_vpngate discover --from-file feed.csv
+
+# 机器可读输出
+python3 -m smart_vpngate discover --json
+```
+
+输出示例：
+
+```
+COUNTRY PROTO      SCORE   PING  ID
+-----------------------------------
+JP      tcp       900000     20  JP_1.1.1.1_443_tcp
+KR      tcp       700000     40  KR_2.2.2.2_443_tcp
+-----------------------------------
+total 2 nodes  [JP=1, KR=1]
+```
+
+> 缺省缓存路径为 `vpngate_data/smart_nodes.json`，可用 `--cache` 覆盖。
+
+#### 运行测试
+
+```bash
+python3 -m pytest -q      # 26 项离线单元测试
+```
+
+---
+
 ### 🎁 捐赠支持项目开发
 
 如果您觉得这个项目对您有所帮助，欢迎捐赠支持我们的后续开发与维护：
@@ -221,6 +288,44 @@ To prevent unauthorized scanning and abuse of the proxy port on the public inter
 #### 3. "API Domain Blocked" / Candidate nodes pool is empty (0 nodes)
 * **Reason**: The official VPNGate domain is blocked or DNS resolution failed on your VPS.
 * **Solution**: Add an HTTP/SOCKS5 upstream proxy in the settings panel (Admin -> Proxy Settings), or configure public DNS in `/etc/resolv.conf` (e.g., `nameserver 8.8.8.8`).
+
+---
+
+### 🧭 Smart VPNGate V2 (New Architecture · Dev Preview)
+
+The project is evolving toward a **policy-driven Smart Exit Manager** per
+[`docs/DESIGN.md`](docs/DESIGN.md). The new architecture is a layered
+`smart_vpngate` Python package that lives **alongside** the current
+`vpngate_manager.py` without disturbing it, delivered layer by layer.
+
+> ⚠️ **Status: dev preview.** The one-click install and Web UI above are still
+> served by the existing AimiliVPN and work as before. `smart_vpngate` is the
+> new core being built — **only the first layer (Discovery) is done so far**, so
+> it cannot yet manage/switch an exit on its own.
+
+| Layer | Responsibility | Status |
+| --- | --- | --- |
+| Config | YAML config with typed validation + defaults | ✅ done |
+| Models | `Node` model + composite score (not raw ping) | ✅ done |
+| Provider | `discover/connect/disconnect/status/public_ip` interface | ✅ interface ready |
+| Discovery | Passive: fetch → parse → normalize → filter → cache | ✅ done |
+| NodePool / HealthCheck / PolicyEngine / ExitManager / VPNGate Provider / Dashboard | remaining layers | ⏳ planned |
+
+**Configure** (copy the template; omitted keys fall back to defaults):
+
+```bash
+cp config.example.yaml config.yaml
+```
+
+**Run Discovery** (the currently usable capability):
+
+```bash
+python3 -m smart_vpngate discover --config config.yaml   # fetch, filter, cache
+python3 -m smart_vpngate discover --from-file feed.csv    # offline, no network
+python3 -m smart_vpngate discover --json                  # machine-readable
+```
+
+**Run tests:** `python3 -m pytest -q` (26 offline unit tests).
 
 ---
 
