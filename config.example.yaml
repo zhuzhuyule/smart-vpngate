@@ -1,0 +1,43 @@
+# Smart VPNGate configuration (V2)
+# Everything is YAML. Copy to config.yaml and edit. All sections are optional;
+# omitted keys fall back to the defaults shown here.
+
+discovery:
+  # Country allowlist (ISO-3166 alpha-2). Empty = all countries allowed.
+  countries:
+    - JP
+    - KR
+    - US
+  # Countries to always exclude, even if allowlisted.
+  blacklist:
+    - CN
+    - RU
+  # Accepted OpenVPN transport protocols.
+  protocols:
+    - tcp
+    - udp
+  max_nodes_per_country: 100
+  min_score: 0        # minimum VPNGate score
+  min_speed: 0        # minimum measured speed (enforced by Node Pool)
+  max_ping: 9999      # maximum ping in ms
+  refresh_interval: 1800   # seconds between discovery refreshes (30 min)
+
+policy:
+  # locked-country | priority | auto
+  mode: locked-country
+  # Used when mode == locked-country.
+  country: JP
+  # Fallback order when mode == priority.
+  priority:
+    - JP
+    - KR
+    - SG
+    - US
+  # Stay on the current node unless it fails (avoid churn).
+  stickiness: true
+
+health:
+  interval: 300   # seconds between health checks (5 min)
+
+dashboard:
+  auto_refresh: true

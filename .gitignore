@@ -61,6 +61,14 @@ test_*.py
 *.bak
 *.orig
 
+# 保留 Smart VPNGate V2 单元测试（覆盖上面的 test_*.py 规则）
+!tests/
+!tests/test_*.py
+
+# ---- Smart VPNGate V2 运行时 ----
+# 用户真实配置不入库；仅提交 config.example.yaml 模板
+config.yaml
+
 # ---- 系统文件 ----
 .DS_Store
 Thumbs.db
