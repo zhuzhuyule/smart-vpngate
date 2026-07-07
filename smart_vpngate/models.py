@@ -8,6 +8,7 @@ Policy Engine ranks them via :attr:`Node.score`.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field, asdict
 from typing import Any
@@ -70,8 +71,11 @@ class Node:
         """
         score = 0.0
 
-        # Provider-reported score (normalized into a modest band).
-        score += min(self.vpngate_score / 1_000_000.0, 50.0)
+        # Provider-reported score. Raw VPNGate scores span many orders of
+        # magnitude (thousands .. billions), so log-scale it into a bounded,
+        # monotonic band rather than a saturating linear ratio.
+        if self.vpngate_score > 0:
+            score += min(math.log10(self.vpngate_score) * 5.0, 50.0)
 
         # Throughput: download in Mbps contributes directly (capped).
         score += min(self.download, 100.0)

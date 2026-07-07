@@ -127,22 +127,25 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 
 项目正在按 [`docs/DESIGN.md`](docs/DESIGN.md) 向**策略驱动的智能出口管理器（Smart Exit Manager）**演进。新架构以独立分层的 `smart_vpngate` Python 包实现，**与现有 `vpngate_manager.py` 并存、互不影响**，逐层交付。
 
-> ⚠️ **当前状态：开发预览。** 上面的一键部署与 Web 面板仍由现有的 AimiliVPN（`vpngate_manager.py`）提供并可正常使用；下面的 `smart_vpngate` 是正在搭建的新内核，目前**仅完成第一层（Discovery）**，尚不能独立完成"自动连接/切换出口"。
+> ⚠️ **当前状态：新内核六层已全部实现并通过单元测试（81 项），可用 `fake` provider 离线端到端跑通整条调度链路。** 上面的一键部署与 Web 面板仍由现有的 AimiliVPN（`vpngate_manager.py`）提供；`smart_vpngate` 新内核与其并存。真实出口（`vpngate` provider）需在具备 root 与 TUN 设备的 VPS 上运行 OpenVPN。
 
 #### 分层进度
 
 | 分层 | 职责 | 状态 |
 | --- | --- | --- |
 | **Config** | YAML 配置（discovery/policy/health/dashboard），带类型校验与默认值 | ✅ 已完成 |
-| **Models** | `Node` 数据模型 + 综合评分（非单纯 ping） | ✅ 已完成 |
-| **Provider** | 统一出口接口 `discover/connect/disconnect/status/public_ip`（多 Provider 扩展点） | ✅ 接口就绪 |
+| **Models** | `Node` 数据模型 + 综合评分（非单纯 ping，延迟/速度/丢包/健康/信誉加权） | ✅ 已完成 |
+| **Provider** | 统一出口接口 `discover/connect/disconnect/status/public_ip`（多 Provider 扩展点） | ✅ 已完成 |
 | **Discovery** | 被动式：拉取 → 解析 → 归一化 → 过滤 → 缓存（不连接、不选择、不调度） | ✅ 已完成 |
-| **NodePool** | 分国家节点池、Top50、排序淘汰 | ⏳ 待开发 |
-| **HealthCheck** | Ping/丢包/下载/握手/公网 IP 周期检测 | ⏳ 待开发 |
-| **PolicyEngine** | 锁国家 / 国家优先级 / 粘性 / 故障切换 | ⏳ 待开发 |
-| **ExitManager** | 唯一活动出口的 Connect/Switch/Recover | ⏳ 待开发 |
-| **VPNGate Provider** | 将接口对接现有 OpenVPN 连接逻辑 | ⏳ 待开发 |
-| **Dashboard** | 当前出口 + 节点表 | ⏳ 待开发 |
+| **NodePool** | 分国家节点池、Top-N、按分排序、健康指标跨刷新保留、淘汰 | ✅ 已完成 |
+| **HealthCheck** | 可注入探针，更新 Ping/丢包/下载/状态；健康分级 | ✅ 已完成 |
+| **PolicyEngine** | 锁国家 / 国家优先级 / 粘性 / 仅故障切换 | ✅ 已完成 |
+| **ExitManager** | 唯一活动出口的 Connect/Switch/Recover + 故障转移 | ✅ 已完成 |
+| **VPNGate Provider** | 通过可注入 connector 封装 OpenVPN（VPS 上直连） | ✅ 已完成 |
+| **FakeProvider** | 内存版 provider，供离线演示/测试端到端跑通 | ✅ 已完成 |
+| **Dashboard** | 当前出口面板 + 节点表（只读，经 ExitManager） | ✅ 已完成 |
+
+> 说明：完整"智能出口"闭环（发现→池→健康→策略→出口→面板）已打通并可运行。尚未做的是把新内核接管现有 Web UI，以及 V3 的 GeoIP/ISP/ASN 富化等（见 `docs/DESIGN.md`）。
 
 #### 配置文件
 
@@ -154,30 +157,49 @@ cp config.example.yaml config.yaml
 
 关键字段：`discovery.countries`（国家白名单）、`discovery.blacklist`（黑名单）、`discovery.protocols`、`policy.mode`（`locked-country`/`priority`/`auto`）、`policy.country`、`health.interval`。完整示例见 [`config.example.yaml`](config.example.yaml)。
 
-#### 运行 Discovery（当前可用能力）
+#### 命令行用法
 
-拉取官方 VPNGate 节点、按策略过滤并写入缓存：
+**1) Discovery —— 拉取、过滤、缓存节点**
 
 ```bash
-# 依配置在线拉取、过滤、缓存
-python3 -m smart_vpngate discover --config config.yaml
-
-# 离线：从本地 CSV 读取（便于测试，无需联网）
-python3 -m smart_vpngate discover --from-file feed.csv
-
-# 机器可读输出
-python3 -m smart_vpngate discover --json
+python3 -m smart_vpngate discover --config config.yaml     # 在线拉取
+python3 -m smart_vpngate discover --from-file feed.csv      # 离线，从本地 CSV
+python3 -m smart_vpngate discover --json                    # 机器可读输出
 ```
 
-输出示例：
+**2) run —— 运行完整智能出口管理器（发现→池→健康→策略→出口→面板）**
+
+```bash
+# 离线演示：内存版 fake provider，无需 root/联网，一个 tick 后打印面板
+python3 -m smart_vpngate run --provider fake --once
+
+# 真实运行（VPS，需 root + TUN + openvpn）：持续守护，按策略连接/切换/恢复
+python3 -m smart_vpngate run --provider vpngate --config config.yaml
+```
+
+`run --provider fake --once` 输出示例：
 
 ```
-COUNTRY PROTO      SCORE   PING  ID
------------------------------------
-JP      tcp       900000     20  JP_1.1.1.1_443_tcp
-KR      tcp       700000     40  KR_2.2.2.2_443_tcp
------------------------------------
-total 2 nodes  [JP=1, KR=1]
+=== Current Exit ===
+  provider : fake
+  node     : JP_203.0.113.11_443_tcp (JP)
+  protocol : tcp   health: healthy
+  public IP: 203.0.113.1
+  policy   : keep — current node healthy and allowed
+
+=== Node Table (4 nodes, 3 countries) ===
+CUR COUNTRY PROTO STATUS        SCORE  ID
+-----------------------------------------
+->  JP      tcp   healthy     107.971  JP_203.0.113.11_443_tcp
+    JP      tcp   healthy     107.069  JP_203.0.113.12_443_tcp
+    KR      tcp   healthy     106.375  KR_203.0.113.21_443_tcp
+    US      tcp   healthy      97.163  US_203.0.113.31_443_tcp
+```
+
+**3) status —— 打印上次缓存的面板快照**
+
+```bash
+python3 -m smart_vpngate status
 ```
 
 > 缺省缓存路径为 `vpngate_data/smart_nodes.json`，可用 `--cache` 覆盖。
@@ -185,7 +207,7 @@ total 2 nodes  [JP=1, KR=1]
 #### 运行测试
 
 ```bash
-python3 -m pytest -q      # 26 项离线单元测试
+python3 -m pytest -q      # 81 项离线单元测试（覆盖全部六层 + 端到端）
 ```
 
 ---
@@ -298,18 +320,27 @@ The project is evolving toward a **policy-driven Smart Exit Manager** per
 `smart_vpngate` Python package that lives **alongside** the current
 `vpngate_manager.py` without disturbing it, delivered layer by layer.
 
-> ⚠️ **Status: dev preview.** The one-click install and Web UI above are still
-> served by the existing AimiliVPN and work as before. `smart_vpngate` is the
-> new core being built — **only the first layer (Discovery) is done so far**, so
-> it cannot yet manage/switch an exit on its own.
+> ⚠️ **Status: all six layers implemented and unit-tested (81 tests); the whole
+> scheduling chain runs end-to-end offline via the `fake` provider.** The
+> one-click install and Web UI above are still served by the existing AimiliVPN;
+> `smart_vpngate` runs alongside it. A real exit (the `vpngate` provider) needs a
+> VPS with root + a TUN device to run OpenVPN.
 
 | Layer | Responsibility | Status |
 | --- | --- | --- |
 | Config | YAML config with typed validation + defaults | ✅ done |
 | Models | `Node` model + composite score (not raw ping) | ✅ done |
-| Provider | `discover/connect/disconnect/status/public_ip` interface | ✅ interface ready |
+| Provider | `discover/connect/disconnect/status/public_ip` interface | ✅ done |
 | Discovery | Passive: fetch → parse → normalize → filter → cache | ✅ done |
-| NodePool / HealthCheck / PolicyEngine / ExitManager / VPNGate Provider / Dashboard | remaining layers | ⏳ planned |
+| NodePool | Per-country pools, Top-N, score sort, health preserved across refresh | ✅ done |
+| HealthCheck | Injectable probe; updates latency/loss/status; classification | ✅ done |
+| PolicyEngine | locked-country / priority / stickiness / failover-only | ✅ done |
+| ExitManager | Single active exit; connect/switch/recover + failover | ✅ done |
+| VPNGate + Fake providers | OpenVPN wrapper (VPS) + in-memory demo/test provider | ✅ done |
+| Dashboard | Current-exit panel + node table (read-only, via ExitManager) | ✅ done |
+
+Remaining: hand the live Web UI over to the new core, and V3 enrichment
+(GeoIP/ISP/ASN/reputation) — see `docs/DESIGN.md`.
 
 **Configure** (copy the template; omitted keys fall back to defaults):
 
@@ -317,15 +348,16 @@ The project is evolving toward a **policy-driven Smart Exit Manager** per
 cp config.example.yaml config.yaml
 ```
 
-**Run Discovery** (the currently usable capability):
+**Run:**
 
 ```bash
-python3 -m smart_vpngate discover --config config.yaml   # fetch, filter, cache
-python3 -m smart_vpngate discover --from-file feed.csv    # offline, no network
-python3 -m smart_vpngate discover --json                  # machine-readable
+python3 -m smart_vpngate discover --from-file feed.csv    # discovery only, offline
+python3 -m smart_vpngate run --provider fake --once       # full loop, offline demo
+python3 -m smart_vpngate run --provider vpngate           # real run on a VPS
+python3 -m smart_vpngate status                           # print last dashboard
 ```
 
-**Run tests:** `python3 -m pytest -q` (26 offline unit tests).
+**Run tests:** `python3 -m pytest -q` (81 offline unit tests).
 
 ---
 
