@@ -225,8 +225,14 @@ def _cmd_web(args: argparse.Namespace) -> int:
     app = _build_app(args)
     _maybe_start_gateway(args)
     auth = _build_auth(args)
+    # For real runs, mirror status into the legacy files the sv/ml menu reads.
+    status_hook = None
+    if args.provider == "vpngate":
+        from .compat import write_legacy_status
+        status_hook = lambda: write_legacy_status(app, proxy_port=args.proxy_port)  # noqa: E731
     server = DashboardServer(app, host=args.host, port=args.port,
-                             tick_interval=args.tick_interval, auth=auth)
+                             tick_interval=args.tick_interval, auth=auth,
+                             status_hook=status_hook)
     shown_host = "[::]" if args.host in ("::", "") else args.host
     base = f"http://{shown_host}:{args.port}"
     if auth is not None and auth.enabled:

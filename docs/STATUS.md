@@ -58,10 +58,10 @@
 
 ## ❌ 仍未做(功能缺口 / 可选)
 
-1. **`ml` 交互菜单未接新服务**。`/usr/bin/ml` 与旧引擎的 `state.json` 联动;新服务走
-   自己的连接路径,不写旧 `state.json`,所以 `ml` 的状态视图对新服务**不准**。
-   Web 仪表盘是准的。若需要,可让 ExitManager 也回写旧 `state.json`,或给 `ml` 改成读
-   新服务的 `/api/status`。
+1. ~~`ml` 交互菜单未接新服务~~ ✅ **已接**:命令更名为 **`sv`**(保留 `ml` 别名);新服务
+   每个 tick 通过 `compat.write_legacy_status` 回写 `state.json`/`nodes.json`/`public_ip.txt`,
+   菜单据此显示当前节点、出口 IP、健康;进程检测也已识别 `smart_vpngate`。
+   (仍待真机验证真实数值。)
 2. **日志面板**。旧 UI 有分类日志查看/导出;新仪表盘暂无日志页(仅有出口面板 + 节点表)。
 3. **上游代理拉取**。旧引擎支持 API 域名被墙时走上游代理拉节点;新 Discovery 的
    `http_fetcher` 走系统 `HTTPS_PROXY` 环境变量,但没有 UI 配置项。

@@ -186,10 +186,10 @@ else
     echo -e "${YELLOW}警告: 未能检测到 systemd 或 OpenRC，请手动管理服务。${PLAIN}"
 fi
 
-# 6. Configure global command shortcut "ml"
-echo -e "\n${YELLOW}[4/4] 正在创建全局命令快捷接口 'ml'...${PLAIN}"
-echo -e "  -> 正在写入管理脚本 /usr/bin/ml ..."
-cat > /usr/bin/ml <<'EOF'
+# 6. Configure global command shortcut "sv" (with "ml" kept as an alias)
+echo -e "\n${YELLOW}[4/4] 正在创建全局命令快捷接口 'sv'（保留 'ml' 别名）...${PLAIN}"
+echo -e "  -> 正在写入管理脚本 /usr/bin/sv ..."
+cat > /usr/bin/sv <<'EOF'
 #!/usr/bin/env python3
 import sys
 import os
@@ -345,7 +345,7 @@ def get_service_pid(service_name="aimilivpn.service"):
                 try:
                     with open(os.path.join('/proc', pid_dir, 'cmdline'), 'r') as f:
                         cmd = f.read()
-                        if 'vpngate_manager.py' in cmd:
+                        if 'smart_vpngate' in cmd or 'vpngate_manager.py' in cmd:
                             return pid_dir
                 except Exception:
                     continue
@@ -424,7 +424,7 @@ def print_status():
         openvpn_status = f"{green}[已连接]{reset}" if openvpn_ok else f"{red}[未连接]{reset}"
     
     print_line("=======================================================")
-    print_line(f"               {bold}AimiliVPN 管理终端 v2.0{reset}                  ")
+    print_line(f"            {bold}Smart VPNGate 管理终端 (sv){reset}                 ")
     print_line("=======================================================")
     print_line("【核心服务状态】")
     print_line(format_line(f"代理网关 (Port {proxy_port})", gateway_status))
@@ -604,10 +604,11 @@ def uninstall_service():
                 os.unlink("/etc/init.d/aimilivpn")
             except Exception:
                 pass
-        try:
-            os.unlink("/usr/bin/ml")
-        except Exception:
-            pass
+        for _link in ("/usr/bin/sv", "/usr/bin/ml"):
+            try:
+                os.unlink(_link)
+            except Exception:
+                pass
         subprocess.run(["rm", "-rf", INSTALL_DIR])
         print("AimiliVPN 已卸载！")
         sys.exit(0)
@@ -890,15 +891,15 @@ def main():
         sys.exit(0)
         
     options = {
-        '1': ("启动服务 (ml start)", start_service),
-        '2': ("停止服务 (ml stop)", stop_service),
-        '3': ("重启服务 (ml restart)", restart_service),
-        '4': ("日志监控 (ml logs)", show_logs),
-        '5': ("网页配置 (ml web)", configure_web),
-        '6': ("端口配置 (ml port)", configure_port),
-        '7': ("账号密码 (ml password)", configure_credentials),
-        '8': ("一键更新 (ml update)", update_service),
-        '9': ("完全卸载 (ml uninstall)", uninstall_service),
+        '1': ("启动服务 (sv start)", start_service),
+        '2': ("停止服务 (sv stop)", stop_service),
+        '3': ("重启服务 (sv restart)", restart_service),
+        '4': ("日志监控 (sv logs)", show_logs),
+        '5': ("网页配置 (sv web)", configure_web),
+        '6': ("端口配置 (sv port)", configure_port),
+        '7': ("账号密码 (sv password)", configure_credentials),
+        '8': ("一键更新 (sv update)", update_service),
+        '9': ("完全卸载 (sv uninstall)", uninstall_service),
         '0': ("退出终端", None)
     }
     
@@ -971,7 +972,9 @@ def main():
 if __name__ == "__main__":
     main()
 EOF
-chmod +x /usr/bin/ml
+chmod +x /usr/bin/sv
+# Keep "ml" as a backward-compatible alias for "sv".
+ln -sf /usr/bin/sv /usr/bin/ml
 
 # 7. Configure Custom parameters (First-time installation check)
 AUTH_FILE="${INSTALL_DIR}/vpngate_data/ui_auth.json"
@@ -1188,9 +1191,9 @@ echo -e "  * 网页管理账号:  ${YELLOW}${USERNAME}${PLAIN}"
 echo -e "  * 网页管理密码:  ${YELLOW}${PASSWORD}${PLAIN}"
 echo -e "  * HTTP/SOCKS5 代理端口:  ${BLUE}http://127.0.0.1:${PROXY_PORT}/${PLAIN}  或  ${BLUE}http://[::1]:${PROXY_PORT}/${PLAIN}"
 echo -e " --------------------------------------------------------"
-echo -e "  * 快速状态指令:   ${YELLOW}ml status${PLAIN}  或  ${YELLOW}ml${PLAIN}"
-echo -e "  * 查看实时日志:   ${YELLOW}ml logs${PLAIN}"
-echo -e "  * 停止服务:       ${YELLOW}ml stop${PLAIN}"
-echo -e "  * 重启服务:       ${YELLOW}ml restart${PLAIN}"
+echo -e "  * 快速状态指令:   ${YELLOW}sv status${PLAIN}  或  ${YELLOW}sv${PLAIN}   (旧命令 ${YELLOW}ml${PLAIN} 仍可用)"
+echo -e "  * 查看实时日志:   ${YELLOW}sv logs${PLAIN}"
+echo -e "  * 停止服务:       ${YELLOW}sv stop${PLAIN}"
+echo -e "  * 重启服务:       ${YELLOW}sv restart${PLAIN}"
 echo -e "=========================================================="
 echo

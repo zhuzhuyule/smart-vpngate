@@ -241,11 +241,13 @@ class DashboardServer:
     """Runs the supervise loop in the background and serves the dashboard."""
 
     def __init__(self, app: SmartExitManager, host: str = "::", port: int = 8686,
-                 tick_interval: float | None = None, auth: Auth | None = None) -> None:
+                 tick_interval: float | None = None, auth: Auth | None = None,
+                 status_hook=None) -> None:
         self.app = app
         self.host = host
         self.port = port
         self.auth = auth
+        self._status_hook = status_hook
         self.tick_interval = (
             tick_interval if tick_interval is not None else app.config.health.interval
         )
@@ -262,11 +264,21 @@ class DashboardServer:
     def switch(self, node_id: str) -> dict:
         with self._lock:
             self.app.exit.switch(node_id)
-            return self.app.dashboard()
+            snap = self.app.dashboard()
+        self._run_status_hook()
+        return snap
+
+    def _run_status_hook(self) -> None:
+        if self._status_hook is not None:
+            try:
+                self._status_hook()
+            except Exception:  # noqa: BLE001 - status mirroring is best-effort
+                pass
 
     def _tick_once(self) -> None:
         with self._lock:
             self.app.tick()
+        self._run_status_hook()
 
     # -- lifecycle ----------------------------------------------------------
     def _tick_loop(self) -> None:
@@ -280,6 +292,7 @@ class DashboardServer:
     def start(self, serve: bool = True) -> "DashboardServer":
         with self._lock:
             self.app.bootstrap()
+        self._run_status_hook()
         self._tick_thread = threading.Thread(target=self._tick_loop, daemon=True)
         self._tick_thread.start()
 
