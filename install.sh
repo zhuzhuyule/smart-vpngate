@@ -131,17 +131,29 @@ fi
 
 # 5. Configure Service
 echo -e "\n${YELLOW}[3/4] 正在配置系统服务...${PLAIN}"
+
+# Bootstrap config.yaml from the template on first install (missing = defaults).
+if [ ! -f "${INSTALL_DIR}/config.yaml" ] && [ -f "${INSTALL_DIR}/config.example.yaml" ]; then
+    cp "${INSTALL_DIR}/config.example.yaml" "${INSTALL_DIR}/config.yaml"
+    echo -e "  -> 已从模板生成 ${INSTALL_DIR}/config.yaml"
+fi
+
+# Single service: the new Smart Exit Manager (brain) drives the old engine
+# (OpenVPN + hardened routing) and reuses the 7928 SOCKS5/HTTP proxy gateway,
+# serving one authenticated web dashboard on port 8787.
+SVC_EXEC="-m smart_vpngate web --provider vpngate --host :: --port 8787 --config ${INSTALL_DIR}/config.yaml"
+
 if command -v systemctl >/dev/null 2>&1; then
     echo -e "  -> 检测到 systemd，正在创建服务配置 /lib/systemd/system/aimilivpn.service ..."
     cat > /lib/systemd/system/aimilivpn.service <<EOF
 [Unit]
-Description=AimiliVPN OpenVPN Manager with HTTP/SOCKS5 Proxy
+Description=Smart VPNGate — Smart Exit Manager (OpenVPN + HTTP/SOCKS5 Proxy)
 After=network.target
 
 [Service]
 Type=simple
 WorkingDirectory=${INSTALL_DIR}
-ExecStart=/usr/bin/python3 vpngate_manager.py
+ExecStart=/usr/bin/python3 ${SVC_EXEC}
 Restart=always
 RestartSec=5
 EnvironmentFile=-/etc/default/aimilivpn
@@ -156,9 +168,9 @@ elif command -v rc-service >/dev/null 2>&1; then
     cat > /etc/init.d/aimilivpn <<EOF
 #!/sbin/openrc-run
 
-description="AimiliVPN OpenVPN Manager with HTTP/SOCKS5 Proxy"
+description="Smart VPNGate — Smart Exit Manager (OpenVPN + HTTP/SOCKS5 Proxy)"
 command="/usr/bin/python3"
-command_args="${INSTALL_DIR}/vpngate_manager.py"
+command_args="${SVC_EXEC}"
 command_background="yes"
 directory="${INSTALL_DIR}"
 pidfile="/run/aimilivpn.pid"

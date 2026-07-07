@@ -68,8 +68,15 @@ class SmartExitManager:
 
     # -- Lifecycle ----------------------------------------------------------
     def bootstrap(self) -> None:
-        """First discovery + initial exit selection."""
-        self._refresh_discovery()
+        """First discovery + initial exit selection.
+
+        Tolerant of a failed first discovery (e.g. a transient network error at
+        boot): the service still starts and the next tick retries.
+        """
+        try:
+            self._refresh_discovery()
+        except Exception as exc:  # noqa: BLE001 - keep booting; tick will retry
+            self.exit.last_error = f"initial discovery failed: {exc}"
         self.exit.reconcile()
 
     def _refresh_discovery(self) -> None:
