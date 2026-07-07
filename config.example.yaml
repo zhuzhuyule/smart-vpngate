@@ -16,7 +16,13 @@ discovery:
   protocols:
     - tcp
     - udp
+  # How many nodes to keep per country (requirement 1: you define the count).
   max_nodes_per_country: 100
+  # Optional per-country overrides (requirement 2: different count per country).
+  # Countries not listed use max_nodes_per_country.
+  per_country_limits:
+    JP: 50
+    KR: 30
   min_score: 0        # minimum VPNGate score
   min_speed: 0        # minimum measured speed (enforced by Node Pool)
   max_ping: 9999      # maximum ping in ms
@@ -35,6 +41,9 @@ policy:
     - US
   # Stay on the current node unless it fails (avoid churn).
   stickiness: true
+  # Requirement 3: on failover, prefer a node in the same/preferred country;
+  # if none is viable there, fall back to the fastest healthy node anywhere.
+  fallback_fastest: true
 
 health:
   interval: 300   # seconds between health checks (5 min)

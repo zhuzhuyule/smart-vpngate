@@ -77,6 +77,17 @@ class PolicyEngine:
                 return country
         return None
 
+    @staticmethod
+    def _global_best(pool: NodePool, exclude: str | None = None) -> Node | None:
+        """Highest-scoring viable node across *all* countries (the fastest exit)."""
+        best: Node | None = None
+        for node in pool.all():
+            if node.status == "down" or node.id == exclude:
+                continue
+            if best is None or node.score > best.score:
+                best = node
+        return best
+
     # -- Decision -----------------------------------------------------------
     def select(self, pool: NodePool, current: Node | None) -> Decision:
         """Decide what the Exit Manager should do next."""
@@ -108,18 +119,27 @@ class PolicyEngine:
                 return Decision(SWITCH, best, "best node changed (stickiness off)")
             return Decision(KEEP, current, "current node is already best")
 
-        # --- Need a (re)selection. ---
-        if target is None:
-            # Nothing allowed is available. Prefer keeping a live-but-off-policy
-            # exit over having none at all.
+        # --- Need a (re)selection: same/preferred country first. ---
+        node = pool.best(target) if target else None
+
+        # No viable node in any allowed country -> fastest-anywhere fallback.
+        if node is None:
+            if self.config.fallback_fastest:
+                node = self._global_best(pool)
+                if node is not None:
+                    if current is not None and node.id == current.id:
+                        return Decision(KEEP, current,
+                                        "already on the fastest available exit")
+                    action = CONNECT if current is None else SWITCH
+                    return Decision(action, node,
+                                    "no node in preferred country; "
+                                    f"fastest-anywhere fallback -> {node.country_short}")
+            # Fallback disabled or nothing viable at all: keep a live exit if we
+            # have one, otherwise nothing to do.
             if current_ok:
                 return Decision(KEEP, current,
                                 "no allowed candidates; retaining current exit")
             return Decision(NONE, None, "no candidate nodes available")
-
-        node = pool.best(target)
-        if node is None:
-            return Decision(NONE, None, "no viable node in target country")
 
         if current is None:
             return Decision(CONNECT, node, f"initial exit -> {target}")

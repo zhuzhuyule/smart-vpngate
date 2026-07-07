@@ -110,6 +110,19 @@ def test_per_country_cap_and_ordering(tmp_path):
     assert nodes[0].host_name == "jp1"  # highest VPNGate score wins
 
 
+def test_per_country_limit_override(tmp_path):
+    # Requirement 2: different quota per country. JP capped at 1, KR at default.
+    d = _discovery(tmp_path, countries=["JP", "KR"], max_nodes_per_country=10,
+                   per_country_limits={"JP": 1})
+    nodes = d.refresh()
+    counts = {}
+    for n in nodes:
+        counts[n.country_short] = counts.get(n.country_short, 0) + 1
+    assert counts["JP"] == 1        # per-country override applied
+    assert counts["KR"] == 1        # only one KR node in the sample, under cap
+    assert [n.host_name for n in nodes if n.country_short == "JP"] == ["jp1"]
+
+
 def test_empty_allowlist_allows_all_except_blacklist(tmp_path):
     d = _discovery(tmp_path, countries=[], blacklist=["CN"])
     codes = sorted({n.country_short for n in d.refresh()})

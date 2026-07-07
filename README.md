@@ -158,6 +158,12 @@ cp config.example.yaml config.yaml
 
 关键字段：`discovery.countries`（国家白名单）、`discovery.blacklist`（黑名单）、`discovery.protocols`、`policy.mode`（`locked-country`/`priority`/`auto`）、`policy.country`、`health.interval`。完整示例见 [`config.example.yaml`](config.example.yaml)。
 
+**出口选择行为（可配置）：**
+
+1. **拉取数量自定义** —— `discovery.max_nodes_per_country` 决定每国保留多少节点。
+2. **按国家分别配额** —— `discovery.per_country_limits`（如 `JP: 50, KR: 30`）为不同国家单独设定数量，未列出的国家用全局值。
+3. **失效切换：同国优先，其次最快** —— 当前出口失效时，先在**同一国家**里选下一个健康节点；该国已无可用节点时，`policy.fallback_fastest: true`（默认）会回退到**全局最快**的健康节点，避免出口空缺。
+
 > 🧩 **零依赖**：新内核仍保持"纯标准库"。已安装 PyYAML 时优先使用，未安装时自动回退到内置的最小 YAML 解析器，因此在 `install.sh` 部署出的 stock `python3` 上无需 pip 即可运行；`install.sh` 与 systemd 启动脚本无需改动（它们仍负责启动现有的 `vpngate_manager.py`）。
 
 #### 命令行用法

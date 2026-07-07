@@ -180,14 +180,15 @@ class Discovery:
             # no-op placeholder to honor the config contract.
             kept.append(node)
 
-        # Highest VPNGate score first, then cap per country.
+        # Highest VPNGate score first, then cap per country (per-country quota
+        # overrides the global max when configured).
         kept.sort(key=lambda n: n.vpngate_score, reverse=True)
         per_country: dict[str, int] = {}
         capped: list[Node] = []
         for node in kept:
             code = node.country_short.upper()
             count = per_country.get(code, 0)
-            if count >= cfg.max_nodes_per_country:
+            if count >= cfg.limit_for(code):
                 continue
             per_country[code] = count + 1
             capped.append(node)

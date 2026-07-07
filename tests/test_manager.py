@@ -86,6 +86,27 @@ def test_end_to_end_failover_on_active_probe_failure(tmp_path):
     assert app.exit.current.country_short == "JP"      # still within locked country
 
 
+def test_failover_falls_back_to_fastest_when_country_exhausted(tmp_path):
+    # Locked JP with a single JP node; when it fails and no other JP exists,
+    # the manager must fall back to the fastest node anywhere (KR here).
+    feed = _feed([
+        ("jp1", "203.0.113.11", 9_000_000, 18, "Japan", "JP", "tcp", 443),
+        ("kr1", "203.0.113.21", 7_000_000, 30, "Korea Republic of", "KR", "tcp", 443),
+    ])
+    jp_id = "JP_203.0.113.11_443_tcp"
+
+    def probe(n):
+        return HealthResult(ok=(n.id != jp_id), latency_ms=n.ping)
+
+    app = _build(_config(tmp_path, country="JP"), feed=feed, probe=probe)
+    app.discovery.cache_path = tmp_path / "n.json"
+    app.bootstrap()
+    assert app.exit.current.id == jp_id           # starts on JP
+    app.tick()                                     # JP probe fails -> failover
+    assert app.exit.current is not None
+    assert app.exit.current.country_short == "KR"  # fastest-anywhere fallback
+
+
 def test_run_once_produces_dashboard(tmp_path):
     app = _build(_config(tmp_path, country="JP"))
     app.discovery.cache_path = tmp_path / "n.json"

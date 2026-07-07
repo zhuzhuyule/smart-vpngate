@@ -48,18 +48,33 @@ class DiscoveryConfig:
     blacklist: list[str] = field(default_factory=lambda: ["CN", "RU"])
     protocols: list[str] = field(default_factory=lambda: ["tcp", "udp"])
     max_nodes_per_country: int = 100
+    # Optional per-country overrides of max_nodes_per_country, e.g. {"JP": 50}.
+    # Countries not listed fall back to max_nodes_per_country.
+    per_country_limits: dict[str, int] = field(default_factory=dict)
     min_score: int = 0
     min_speed: int = 0          # bytes/sec, as reported by VPNGate
     max_ping: int = 9999        # ms
     refresh_interval: int = 1800  # seconds (design example: 30min)
 
+    def limit_for(self, country: str) -> int:
+        """Node quota for ``country`` (per-country override or the global max)."""
+        return self.per_country_limits.get((country or "").upper(),
+                                            self.max_nodes_per_country)
+
     def normalized(self) -> "DiscoveryConfig":
+        limits: dict[str, int] = {}
+        for code, value in (self.per_country_limits or {}).items():
+            try:
+                limits[str(code).strip().upper()] = max(1, int(value))
+            except (TypeError, ValueError):
+                continue
         return replace(
             self,
             countries=[c.upper() for c in _as_str_list(self.countries)],
             blacklist=[c.upper() for c in _as_str_list(self.blacklist)],
             protocols=[p.lower() for p in _as_str_list(self.protocols)] or ["tcp", "udp"],
             max_nodes_per_country=max(1, int(self.max_nodes_per_country)),
+            per_country_limits=limits,
             min_score=max(0, int(self.min_score)),
             min_speed=max(0, int(self.min_speed)),
             max_ping=max(1, int(self.max_ping)),
@@ -75,6 +90,9 @@ class PolicyConfig:
     country: str = "JP"            # used when mode == locked-country
     priority: list[str] = field(default_factory=lambda: ["JP", "KR", "SG", "US"])
     stickiness: bool = True
+    # When the preferred country has no viable node, fall back to the globally
+    # fastest healthy node instead of having no exit at all.
+    fallback_fastest: bool = True
 
     def normalized(self) -> "PolicyConfig":
         return replace(
@@ -83,6 +101,7 @@ class PolicyConfig:
             country=(self.country or "").strip().upper(),
             priority=[c.upper() for c in _as_str_list(self.priority)],
             stickiness=bool(self.stickiness),
+            fallback_fastest=bool(self.fallback_fastest),
         )
 
 
