@@ -127,7 +127,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 
 项目正在按 [`docs/DESIGN.md`](docs/DESIGN.md) 向**策略驱动的智能出口管理器（Smart Exit Manager）**演进。新架构以独立分层的 `smart_vpngate` Python 包实现，**与现有 `vpngate_manager.py` 并存、互不影响**，逐层交付。
 
-> ⚠️ **当前状态：新内核六层已全部实现并通过单元测试（93 项），可用 `fake` provider 离线端到端跑通整条调度链路。** 上面的一键部署与 Web 面板仍由现有的 AimiliVPN（`vpngate_manager.py`）提供；`smart_vpngate` 新内核与其并存。真实出口（`vpngate` provider）需在具备 root 与 TUN 设备的 VPS 上运行 OpenVPN。
+> ⚠️ **当前状态：新内核六层已全部实现并通过单元测试（104 项），可用 `fake` provider 离线端到端跑通整条调度链路。** 上面的一键部署与 Web 面板仍由现有的 AimiliVPN（`vpngate_manager.py`）提供；`smart_vpngate` 新内核与其并存。真实出口（`vpngate` provider）需在具备 root 与 TUN 设备的 VPS 上运行 OpenVPN。
 
 #### 分层进度
 
@@ -350,7 +350,7 @@ The project is evolving toward a **policy-driven Smart Exit Manager** per
 `smart_vpngate` Python package that lives **alongside** the current
 `vpngate_manager.py` without disturbing it, delivered layer by layer.
 
-> ⚠️ **Status: all six layers implemented and unit-tested (93 tests); the whole
+> ⚠️ **Status: all six layers implemented and unit-tested (104 tests); the whole
 > scheduling chain runs end-to-end offline via the `fake` provider.** The
 > one-click install and Web UI above are still served by the existing AimiliVPN;
 > `smart_vpngate` runs alongside it. A real exit (the `vpngate` provider) needs a
