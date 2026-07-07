@@ -167,6 +167,26 @@ def _cmd_run(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# web
+# --------------------------------------------------------------------------- #
+def _cmd_web(args: argparse.Namespace) -> int:
+    from .web import DashboardServer
+    app = _build_app(args)
+    server = DashboardServer(app, host=args.host, port=args.port,
+                             tick_interval=args.tick_interval)
+    shown_host = "[::]" if args.host in ("::", "") else args.host
+    print(f"Smart VPNGate dashboard on http://{shown_host}:{args.port}/  "
+          f"(provider={args.provider}). Ctrl-C to stop.")
+    try:
+        server.start(serve=True)
+    except OSError as exc:
+        print(f"failed to start server: {exc}", file=sys.stderr)
+        return 1
+    print("\nstopped.")
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # status
 # --------------------------------------------------------------------------- #
 def _cmd_status(args: argparse.Namespace) -> int:
@@ -223,6 +243,19 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--max-ticks", type=int, default=None,
                    help="stop after N ticks (default: run forever)")
     r.set_defaults(func=_cmd_run)
+
+    w = sub.add_parser("web", help="serve the web dashboard (current exit + node table)")
+    w.add_argument("-c", "--config", default="config.yaml", help=common_config[2]["help"])
+    w.add_argument(common_cache[0], **common_cache[1])
+    w.add_argument("--provider", choices=["vpngate", "fake"], default="vpngate",
+                   help="exit provider (fake = offline in-memory demo)")
+    w.add_argument("--url", default=DEFAULT_API_URL, help="VPNGate API URL")
+    w.add_argument("--host", default="::", help="bind host (default: :: = all)")
+    w.add_argument("--port", type=int, default=8686, help="bind port (default: 8686)")
+    w.add_argument("--tick-interval", type=float, default=None,
+                   help="seconds between background health/policy ticks "
+                        "(default: health.interval from config)")
+    w.set_defaults(func=_cmd_web)
 
     s = sub.add_parser("status", help="print the dashboard from the last cache")
     s.add_argument(common_cache[0], **common_cache[1])

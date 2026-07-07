@@ -127,7 +127,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 
 项目正在按 [`docs/DESIGN.md`](docs/DESIGN.md) 向**策略驱动的智能出口管理器（Smart Exit Manager）**演进。新架构以独立分层的 `smart_vpngate` Python 包实现，**与现有 `vpngate_manager.py` 并存、互不影响**，逐层交付。
 
-> ⚠️ **当前状态：新内核六层已全部实现并通过单元测试（88 项），可用 `fake` provider 离线端到端跑通整条调度链路。** 上面的一键部署与 Web 面板仍由现有的 AimiliVPN（`vpngate_manager.py`）提供；`smart_vpngate` 新内核与其并存。真实出口（`vpngate` provider）需在具备 root 与 TUN 设备的 VPS 上运行 OpenVPN。
+> ⚠️ **当前状态：新内核六层已全部实现并通过单元测试（93 项），可用 `fake` provider 离线端到端跑通整条调度链路。** 上面的一键部署与 Web 面板仍由现有的 AimiliVPN（`vpngate_manager.py`）提供；`smart_vpngate` 新内核与其并存。真实出口（`vpngate` provider）需在具备 root 与 TUN 设备的 VPS 上运行 OpenVPN。
 
 #### 分层进度
 
@@ -144,8 +144,9 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 | **VPNGate Provider** | 通过可注入 connector 封装 OpenVPN（VPS 上直连） | ✅ 已完成 |
 | **FakeProvider** | 内存版 provider，供离线演示/测试端到端跑通 | ✅ 已完成 |
 | **Dashboard** | 当前出口面板 + 节点表（只读，经 ExitManager） | ✅ 已完成 |
+| **Web UI** | 纯标准库网页仪表盘：实时刷新、排序/过滤/搜索、手动切换 | ✅ 已完成 |
 
-> 说明：完整"智能出口"闭环（发现→池→健康→策略→出口→面板）已打通并可运行。尚未做的是把新内核接管现有 Web UI，以及 V3 的 GeoIP/ISP/ASN 富化等（见 `docs/DESIGN.md`）。
+> 说明：完整"智能出口"闭环（发现→池→健康→策略→出口→**网页面板**）已打通并可运行，新内核已自带独立的 Web 仪表盘。尚未做的是将其与旧版 `vpngate_manager.py` 的 Web UI 统一，以及 V3 的 GeoIP/ISP/ASN 富化等（见 `docs/DESIGN.md`）。
 
 #### 配置文件
 
@@ -198,18 +199,37 @@ CUR COUNTRY PROTO STATUS        SCORE  ID
     US      tcp   healthy      97.163  US_203.0.113.31_443_tcp
 ```
 
-**3) status —— 打印上次缓存的面板快照**
+**3) web —— 启动网页仪表盘（当前出口面板 + 节点表 + 搜索/过滤/排序 + 手动切换）**
+
+```bash
+# 离线演示：浏览器打开 http://localhost:8686/ ，用内存 provider 试用整套 UI
+python3 -m smart_vpngate web --provider fake --port 8686
+
+# 真实运行（VPS）：后台线程按策略调度，网页只读展示 + 手动切换
+python3 -m smart_vpngate web --provider vpngate --config config.yaml
+```
+
+Web 仪表盘（纯标准库 `http.server`，无前端框架，单页内联）提供：
+
+- **Current Exit** 面板：国家 / 节点 / 协议 / 健康 / 公网 IP / 在线时长 / 策略决策
+- **Node Table**：点击表头排序，关键字搜索，按国家/状态过滤，一键 **switch** 手动切换
+- 每 5 秒自动刷新（可关闭）；所有状态经 ExitManager，前端不直连 Provider
+
+接口：`GET /`（页面）、`GET /api/status`（JSON 快照）、`POST /api/switch`（`{"node_id":"…"}`）。
+
+**4) status —— 打印上次缓存的面板快照（无需起服务）**
 
 ```bash
 python3 -m smart_vpngate status
 ```
 
 > 缺省缓存路径为 `vpngate_data/smart_nodes.json`，可用 `--cache` 覆盖。
+> Web 默认端口 `8686`（与旧版 UI 的 `8787` 错开，可并存），用 `--port` 修改。
 
 #### 运行测试
 
 ```bash
-python3 -m pytest -q      # 88 项离线单元测试（覆盖全部六层 + 端到端）
+python3 -m pytest -q      # 93 项离线单元测试（六层 + 端到端 + Web UI）
 ```
 
 ---
@@ -322,7 +342,7 @@ The project is evolving toward a **policy-driven Smart Exit Manager** per
 `smart_vpngate` Python package that lives **alongside** the current
 `vpngate_manager.py` without disturbing it, delivered layer by layer.
 
-> ⚠️ **Status: all six layers implemented and unit-tested (88 tests); the whole
+> ⚠️ **Status: all six layers implemented and unit-tested (93 tests); the whole
 > scheduling chain runs end-to-end offline via the `fake` provider.** The
 > one-click install and Web UI above are still served by the existing AimiliVPN;
 > `smart_vpngate` runs alongside it. A real exit (the `vpngate` provider) needs a
@@ -339,10 +359,10 @@ The project is evolving toward a **policy-driven Smart Exit Manager** per
 | PolicyEngine | locked-country / priority / stickiness / failover-only | ✅ done |
 | ExitManager | Single active exit; connect/switch/recover + failover | ✅ done |
 | VPNGate + Fake providers | OpenVPN wrapper (VPS) + in-memory demo/test provider | ✅ done |
-| Dashboard | Current-exit panel + node table (read-only, via ExitManager) | ✅ done |
+| Dashboard + Web UI | Current-exit panel + node table (read-only); stdlib web dashboard with sort/filter/search + manual switch | ✅ done |
 
-Remaining: hand the live Web UI over to the new core, and V3 enrichment
-(GeoIP/ISP/ASN/reputation) — see `docs/DESIGN.md`.
+Remaining: unify the new core's web dashboard with the legacy `vpngate_manager.py`
+UI, and V3 enrichment (GeoIP/ISP/ASN/reputation) — see `docs/DESIGN.md`.
 
 **Configure** (copy the template; omitted keys fall back to defaults):
 
@@ -356,10 +376,17 @@ cp config.example.yaml config.yaml
 python3 -m smart_vpngate discover --from-file feed.csv    # discovery only, offline
 python3 -m smart_vpngate run --provider fake --once       # full loop, offline demo
 python3 -m smart_vpngate run --provider vpngate           # real run on a VPS
+python3 -m smart_vpngate web  --provider fake --port 8686 # web dashboard (browser)
 python3 -m smart_vpngate status                           # print last dashboard
 ```
 
-**Run tests:** `python3 -m pytest -q` (88 offline unit tests).
+The **web dashboard** (`web` subcommand, pure-stdlib `http.server`, no frontend
+framework) shows the Current Exit panel and a sortable/searchable/filterable Node
+Table with one-click manual switch; it auto-refreshes and talks only to the Exit
+Manager (`GET /api/status`, `POST /api/switch`). Default port `8686` (distinct
+from the legacy UI's `8787`, so both can run side by side).
+
+**Run tests:** `python3 -m pytest -q` (93 offline unit tests).
 
 > 🧩 **Zero-dependency:** the new core stays pure-stdlib. PyYAML is used when
 > installed, otherwise a tiny built-in YAML parser handles the config, so it runs
