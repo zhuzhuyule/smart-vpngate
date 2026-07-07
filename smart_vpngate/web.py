@@ -119,6 +119,12 @@ let sortKey="score",sortDir=-1,last=null;
 
 function h(t){const d=document.createElement("div");d.textContent=t;return d.innerHTML;}
 function badge(s){return `<span class="badge ${s||'unknown'}">${s||'unknown'}</span>`;}
+function flag(cc){ // ISO alpha-2 -> emoji flag (regional indicators); degrades to code
+  const c=(cc||"").toUpperCase();
+  if(!/^[A-Z]{2}$/.test(c))return"";
+  return String.fromCodePoint(0x1F1E6+c.charCodeAt(0)-65,0x1F1E6+c.charCodeAt(1)-65);
+}
+function country(cc){const f=flag(cc);return (f?f+" ":"")+h(cc||"—");}
 
 function renderHead(){
   document.getElementById("head").innerHTML=COLS.map(([k,l])=>
@@ -136,7 +142,7 @@ function exitPanel(e){
   txt.textContent=e.connected?"Connected":"Not connected"+(e.last_error?" — "+e.last_error:"");
   document.getElementById("policy").textContent=e.last_decision?
     `   ·   policy: ${e.last_decision.action} — ${e.last_decision.reason}`:"";
-  const cells=[["Country",e.country_short||"—"],["Node",e.node_id||"—"],
+  const cells=[["Country",e.country_short?country(e.country_short):"—"],["Node",e.node_id||"—"],
     ["Protocol",e.protocol||"—"],["Health",badge(e.health)],
     ["Public IP",e.public_ip||"—"],["Uptime",e.connected_seconds?e.connected_seconds+"s":"—"]];
   document.getElementById("exit").innerHTML=cells.map(([k,v])=>
@@ -165,7 +171,7 @@ function draw(){
     const act=n.current?`<button disabled>active</button>`:
       `<button class="ghost" onclick="doSwitch('${n.id}')">switch</button>`;
     return `<tr class="${n.current?'current':''}">
-      <td>${cur}</td><td>${h(n.country_short)}</td><td>${h(n.protocol)}</td>
+      <td>${cur}</td><td>${country(n.country_short)}</td><td>${h(n.protocol)}</td>
       <td>${badge(n.status)}</td><td>${(n.score||0).toFixed(1)}</td>
       <td>${n.latency_ms||0}</td><td>${loss}</td><td>${dl}</td>
       <td class="mono">${h(n.id)}</td><td>${act}</td></tr>`;
@@ -174,7 +180,7 @@ function draw(){
 function fillCountries(){
   const sel=document.getElementById("fcountry"),cur=sel.value;
   sel.innerHTML='<option value="">all countries</option>'+
-    last.countries.map(c=>`<option value="${c}">${c}</option>`).join("");
+    last.countries.map(c=>`<option value="${c}">${flag(c)} ${c}</option>`).join("");
   sel.value=cur;
 }
 async function refresh(){
