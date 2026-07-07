@@ -134,3 +134,28 @@ def test_priority_mode_end_to_end(tmp_path):
     app.discovery.cache_path = tmp_path / "n.json"
     app.bootstrap()
     assert app.exit.current.country_short == "JP"       # highest priority available
+
+
+# --- regression: found on a real VPS -------------------------------------
+# tcp_probe tests reachability of the node's *public* endpoint, which stays up
+# even after our own local OpenVPN process dies (killing our client doesn't
+# make the remote VPNGate server stop listening). Live testing showed the
+# service reporting "healthy" for 6+ minutes after `kill -9`-ing the tunnel's
+# openvpn process. tick() must also trust the provider's own liveness signal
+# for the active exit, not just the generic probe.
+def test_failover_when_provider_reports_dead_tunnel_but_probe_still_ok(tmp_path):
+    app = _build(_config(tmp_path, country="JP"),
+                 probe=lambda n: HealthResult(ok=True, latency_ms=n.ping))  # always "healthy"
+    app.discovery.cache_path = tmp_path / "n.json"
+    app.bootstrap()
+    first = app.exit.current.id
+
+    # Simulate the underlying tunnel process dying without going through
+    # ExitManager (exactly what `kill -9 <openvpn pid>` does in reality):
+    # the provider no longer thinks it's connected, but exit.current still
+    # points at the old node until the next tick notices.
+    app.provider.disconnect()
+
+    app.tick()
+    assert app.exit.current is not None
+    assert app.exit.current.id != first          # failed over despite probe saying "ok"

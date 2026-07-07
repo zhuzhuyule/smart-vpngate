@@ -25,7 +25,7 @@ def _app(tmp_path):
     return app
 
 
-def test_writes_state_nodes_public_ip(tmp_path):
+def test_writes_state_and_nodes(tmp_path):
     app = _app(tmp_path)
     write_legacy_status(app, proxy_port=7928, data_dir=tmp_path)
 
@@ -33,14 +33,22 @@ def test_writes_state_nodes_public_ip(tmp_path):
     assert state["active_openvpn_node_id"] == app.exit.current.id
     assert state["proxy_ok"] is True
     assert state["local_proxy"] == "http://127.0.0.1:7928"
-    assert state["proxy_ip"]                       # exit IP mirrored
+    assert state["proxy_ip"]                       # exit IP mirrored via state.json
 
     nodes = json.loads((tmp_path / "nodes.json").read_text())
     active = [n for n in nodes if n["active"]]
     assert len(active) == 1 and active[0]["id"] == app.exit.current.id
     assert active[0]["country"]
 
-    assert (tmp_path / "public_ip.txt").read_text().strip() == state["proxy_ip"]
+
+def test_does_not_touch_public_ip_txt(tmp_path):
+    # public_ip.txt is the VPS's own IP (install.sh writes it once); the
+    # tunnel's exit IP must only go through state.json's proxy_ip, never here,
+    # or it clobbers the VPS IP the sv/ml menu uses to build the login URL.
+    (tmp_path / "public_ip.txt").write_text("203.0.113.254", encoding="utf-8")
+    app = _app(tmp_path)
+    write_legacy_status(app, proxy_port=7928, data_dir=tmp_path)
+    assert (tmp_path / "public_ip.txt").read_text() == "203.0.113.254"
 
 
 def test_disconnected_state(tmp_path):

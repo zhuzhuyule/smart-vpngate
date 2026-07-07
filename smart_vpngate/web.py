@@ -19,12 +19,50 @@ Endpoints:
 from __future__ import annotations
 
 import json
+import socket
 import threading
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from .auth import Auth
 from .manager import SmartExitManager
+
+
+class _DualStackHTTPServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer that binds IPv6 wildcard/addresses correctly.
+
+    ``ThreadingHTTPServer`` hardcodes ``address_family = socket.AF_INET``, so
+    passing an IPv6 host (e.g. ``"::"``, the default bind-everywhere address)
+    raises ``OSError: [Errno -9] Address family for hostname not supported`` at
+    bind time — fatal under systemd's ``Restart=always`` (crash-loops the whole
+    service). Pick the right family from the host string, accept IPv4 clients
+    on the same IPv6 socket when possible, and fall back to IPv4 if the IPv6
+    bind itself fails (e.g. IPv6 disabled on the host).
+    """
+
+    def __init__(self, server_address, RequestHandlerClass, bind_and_activate=True):
+        host, port = server_address
+        self.address_family = socket.AF_INET6 if (":" in host or host == "") else socket.AF_INET
+        try:
+            super().__init__(server_address, RequestHandlerClass, bind_and_activate)
+        except OSError:
+            if self.address_family != socket.AF_INET6:
+                raise
+            try:
+                self.socket.close()
+            except Exception:  # noqa: BLE001
+                pass
+            fallback_host = "0.0.0.0" if host in ("::", "") else "127.0.0.1"
+            self.address_family = socket.AF_INET
+            super().__init__((fallback_host, port), RequestHandlerClass, bind_and_activate)
+
+    def server_bind(self):
+        if self.address_family == socket.AF_INET6:
+            try:
+                self.socket.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 0)
+            except OSError:
+                pass
+        super().server_bind()
 
 _PAGE = """<!doctype html>
 <html lang="en">
@@ -253,7 +291,7 @@ class DashboardServer:
         )
         self._lock = threading.Lock()
         self._stop = threading.Event()
-        self._httpd: ThreadingHTTPServer | None = None
+        self._httpd: _DualStackHTTPServer | None = None
         self._tick_thread: threading.Thread | None = None
 
     # -- state access (all serialized) -------------------------------------
@@ -297,7 +335,7 @@ class DashboardServer:
         self._tick_thread.start()
 
         handler = _make_handler(self)
-        self._httpd = ThreadingHTTPServer((self.host, self.port), handler)
+        self._httpd = _DualStackHTTPServer((self.host, self.port), handler)
         self.port = self._httpd.server_address[1]  # resolve if port was 0
         if serve:
             try:

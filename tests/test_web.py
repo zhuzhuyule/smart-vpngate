@@ -165,3 +165,26 @@ def test_auth_login_flow(authed_server):
         assert r.status == 200
         snap = json.loads(r.read().decode())
     assert snap["current_exit"]["country_short"] == "JP"
+
+
+# --- dual-stack bind regression -------------------------------------------
+# Regression test for a real production crash: install.sh launches with
+# --host :: (IPv6 wildcard, "bind everywhere"), but plain ThreadingHTTPServer
+# hardcodes address_family=AF_INET, so binding "::" raised
+# "OSError: [Errno -9] Address family for hostname not supported" and
+# crash-looped the systemd service. Every other test here uses 127.0.0.1,
+# which is exactly why this slipped through — this test must bind "::".
+def test_binds_ipv6_wildcard_host_without_crashing():
+    import threading
+
+    srv = DashboardServer(_app(), host="::", port=0, tick_interval=3600)
+    srv.start(serve=False)          # bootstrap + bind, but don't block
+    t = threading.Thread(target=srv._httpd.serve_forever, daemon=True)
+    t.start()
+    try:
+        assert srv._httpd is not None
+        assert srv.port != 0
+        with urllib.request.urlopen(f"http://127.0.0.1:{srv.port}/api/status", timeout=5) as r:
+            assert r.status == 200
+    finally:
+        srv.stop()

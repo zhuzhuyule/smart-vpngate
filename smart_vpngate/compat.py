@@ -1,10 +1,17 @@
 """Legacy status compatibility for the `sv` / `ml` terminal menu.
 
-The management menu reads the engine's ``state.json`` / ``nodes.json`` /
-``public_ip.txt``. The scheduling layer keeps its own state, so to make the
-menu reflect the single service we mirror the current exit into those legacy
-files each tick. This is a thin, best-effort adapter — it never affects
-scheduling and failures are swallowed.
+The management menu reads the engine's ``state.json`` and ``nodes.json``. The
+scheduling layer keeps its own state, so to make the menu reflect the single
+service we mirror the current exit into those legacy files each tick. This is
+a thin, best-effort adapter — it never affects scheduling and failures are
+swallowed.
+
+Deliberately NOT touched: ``public_ip.txt``. That file holds the VPS's own
+public IP (written once by install.sh, read by the menu's ``get_public_ip()``
+to build the login URL) — a different thing from the tunnel's exit IP, which
+already has its own channel: ``state.json``'s ``proxy_ip`` field. Writing the
+exit IP into ``public_ip.txt`` here previously clobbered the VPS's own IP,
+making the printed login URL point at the VPN exit instead of the VPS.
 """
 
 from __future__ import annotations
@@ -70,8 +77,5 @@ def write_legacy_status(app, proxy_port: int = 7928,
                 "active": bool(current and n.id == current.id),
             })
         _write_json(d / "nodes.json", nodes)
-
-        if public_ip:
-            (d / "public_ip.txt").write_text(public_ip, encoding="utf-8")
     except Exception:  # noqa: BLE001 - status mirroring must never break the loop
         pass

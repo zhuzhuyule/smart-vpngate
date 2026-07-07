@@ -5,7 +5,12 @@
 > 单服务、单个带鉴权的网页面板。本文件记录**已完成**、**待你上机验证**、以及
 > **仍未做**的部分。
 
-最后更新对应测试:`python3 -m pytest -q` → **118 passed**。
+最后更新对应测试:`python3 -m pytest -q` → **121 passed**。
+
+> ✅ **2026-07-07 已在真实 VPS 上完整验证一次**（Ubuntu 24.04，root+TUN，`install.sh` 全流程，
+> 真实 VPNGate 节点）。发现并修复了两个只有真机才会暴露的 bug（见下）。之前"待你上机验证"
+> 的 6 项全部走通：真实隧道✅、策略路由✅、7928 代理转发✅（出口 IP 与所连节点一致）、
+> 仪表盘出口 IP 显示✅、故障自动切换✅（约 250s 内切到同国健康节点）、install.sh 端到端✅。
 
 ---
 
@@ -35,33 +40,58 @@
 
 ---
 
-## ⏳ 待你上机验证(沙盒无 root/TUN/openvpn/外网,无法在此验证)
+## ✅ 已在真机上验证过(2026-07-07，Ubuntu 24.04 VPS)
 
-这些**代码已就绪**,但真实行为只能在 VPS 上确认:
+1. **真实 OpenVPN 隧道** ✅ —— `run_openvpn_until_ready` 真实连上 VPNGate 节点，
+   `tun0` 建立点对点 IP，`Initialization Sequence Completed`。
+2. **策略路由生效** ✅ —— `ip route show table 100` / `ip rule` 正确指向 `tun0`，
+   `rp_filter=2` 生效。
+3. **7928 代理转发** ✅ —— `curl -x http://127.0.0.1:7928 https://api.ipify.org`
+   返回的 IP 与所连 VPNGate 节点一致（非 VPS 自身 IP）。
+4. **出口 IP 显示** ✅ —— 仪表盘 `current_exit.public_ip` 与实测代理出口 IP 一致；
+   `sv` 菜单的"出口 IP (出站)"字段也正确。
+5. **故障自动切换** ✅ —— `kill -9` 掉 openvpn 进程后，约 250s 内（对应默认
+   `health.interval=300s` 的下一个 tick）自动切换到同国的另一个健康节点。
+6. **install.sh 端到端** ✅ —— 全新 VPS 上跑通一键部署、systemd 服务、`sv`/`ml` 命令、
+   网页仪表盘登录、8787 对公网可达（经密码鉴权）。
 
-1. **真实 OpenVPN 隧道**:`run_openvpn_until_ready` 能否用 VPNGate 节点建连(需 openvpn、
-   TUN、root、能访问 vpngate.net)。
-2. **策略路由生效**:`setup_policy_routing` 的路由表 100 + `rp_filter=2` 是否让流量正确
-   走 tun0。
-3. **7928 代理转发**:通过 `curl -x http://127.0.0.1:7928 https://ifconfig.me` 验证真实
-   翻墙出口。
-4. **出口 IP 显示**:仪表盘 Public IP 是否显示节点所在国 IP(依赖 1–3 成立)。
-5. **故障自动切换**:主动 `kill` 掉 openvpn 或断网,观察是否按"同国优先→最快兜底"自动切。
-6. **install.sh 端到端**:在干净 VPS 上跑一次一键脚本,确认服务起来、8787 登录页可访问、
-   连上节点、代理可用。
+真机测试过程中发现并修复了两个只有真实网络环境才会暴露的 bug——见下方"已修复的真机 bug"。
 
-> 建议先不经 install.sh、手动验证:
-> `sudo python3 -m smart_vpngate web --provider vpngate --port 8787`(在仓库根目录),
-> 浏览器开 `http://<vps>:8787/<secret>/`,密码见启动日志。
+> 之前建议的手动验证方式仍适用于后续复测：
+> `sudo python3 -m smart_vpngate web --provider vpngate --port 8787`（在仓库根目录），
+> 浏览器开 `http://<vps>:8787/<secret>/`，密码见启动日志。
+
+### 🐞 已修复的真机 bug（离线单测覆盖不到，只有真实部署才会暴露）
+
+1. **IPv6 通配地址绑定崩溃**：`install.sh` 用 `--host ::` 启动服务，但
+   `ThreadingHTTPServer` 硬编码 `address_family=AF_INET`，绑定 `"::"` 直接抛
+   `OSError: [Errno -9] Address family for hostname not supported`，导致整个
+   进程崩溃、systemd 无限重启循环（重连节点→建路由→绑端口崩溃→重来）。参照旧引擎
+   已有的 `DualStackHTTPServer` 模式，在 `smart_vpngate/web.py` 新增等价的
+   `_DualStackHTTPServer` 修复。**所有离线测试都用 `host="127.0.0.1"`，从未测过
+   `"::"` 绑定，这正是它没被发现的原因**——已补充回归测试
+   `test_binds_ipv6_wildcard_host_without_crashing`。
+2. **健康探针测不出本地隧道已死**：默认 `tcp_probe` 连的是节点的**公网端口**（测
+   "这个 VPNGate 服务器还能不能连"），而不是"我们自己的隧道进程是否还活着"——杀掉本地
+   openvpn 进程后，远程服务器的端口仍然对任何新连接开放，探针会一直误报 healthy。
+   真机上实测：`kill -9` 掉 openvpn 后等了 6 分钟仍显示"健康"。修复：
+   `manager.py` 的 `tick()` 现在额外核对 `provider.status()`（真实检查 OpenVPN
+   子进程是否存活），任一信号说"死了"就触发故障转移。已补充回归测试
+   `test_failover_when_provider_reports_dead_tunnel_but_probe_still_ok`。
+3. **`public_ip.txt` 语义冲突**：该文件本意是"VPS 自身公网 IP"（`install.sh` 装机时
+   写一次，供 `sv`/`ml` 拼登录地址用），但 `compat.py` 曾经每个 tick 都把"隧道出口
+   IP"写进同一个文件，覆盖掉 VPS 真实 IP——导致 `sv status` 打印出的"网页登录地址"
+   变成隧道出口 IP（打不开）。修复：`compat.write_legacy_status` 不再碰这个文件，
+   出口 IP 只通过 `state.json` 的 `proxy_ip` 字段传递（`sv` 菜单本就读这个字段）。
 
 ---
 
 ## ❌ 仍未做(功能缺口 / 可选)
 
-1. ~~`ml` 交互菜单未接新服务~~ ✅ **已接**:命令更名为 **`sv`**(保留 `ml` 别名);新服务
-   每个 tick 通过 `compat.write_legacy_status` 回写 `state.json`/`nodes.json`/`public_ip.txt`,
-   菜单据此显示当前节点、出口 IP、健康;进程检测也已识别 `smart_vpngate`。
-   (仍待真机验证真实数值。)
+1. ~~`ml` 交互菜单未接新服务~~ ✅ **已接并在真机验证过**:命令更名为 **`sv`**(保留
+   `ml` 别名);新服务每个 tick 通过 `compat.write_legacy_status` 回写
+   `state.json`/`nodes.json`,菜单据此显示当前节点、出口 IP、健康;进程检测也已
+   识别 `smart_vpngate`。
 2. **日志面板**。旧 UI 有分类日志查看/导出;新仪表盘暂无日志页(仅有出口面板 + 节点表)。
 3. **上游代理拉取**。旧引擎支持 API 域名被墙时走上游代理拉节点;新 Discovery 的
    `http_fetcher` 走系统 `HTTPS_PROXY` 环境变量,但没有 UI 配置项。

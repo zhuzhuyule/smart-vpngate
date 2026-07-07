@@ -94,9 +94,21 @@ class SmartExitManager:
         active = self.exit.current
 
         # Health-check the active exit first; failover immediately if it died.
+        #
+        # The generic probe (e.g. tcp_probe) tests reachability of the node's
+        # public endpoint, which stays up regardless of whether *our own*
+        # tunnel process is still alive — killing the local openvpn process
+        # does not make the remote VPNGate server stop listening. So the
+        # active exit is only considered healthy when BOTH the probe succeeds
+        # AND the provider itself confirms the tunnel for this exact node is
+        # still up (e.g. VPNGateProvider checks the OpenVPN subprocess).
         if active is not None:
+            provider_status = self.provider.status()
+            provider_alive = provider_status.connected and provider_status.node_id == active.id
             result = self.health.check(active)
-            if not result.ok:
+            if not provider_alive or not result.ok:
+                if not provider_alive:
+                    self.exit.last_error = provider_status.message or "provider reports tunnel down"
                 self.exit.on_health(active.id, healthy=False)
                 active = self.exit.current  # may have changed
 

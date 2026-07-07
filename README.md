@@ -134,7 +134,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 
 ### ⚙️ 技术架构与命令行参考
 
-系统按 [`docs/DESIGN.md`](docs/DESIGN.md) 的设计分层实现（发现 → 节点池 → 健康检查 → 策略引擎 → 出口管理 → 仪表盘），代码在 `smart_vpngate/` 包内，全部分层均已实现并通过 **118 项单元测试**（`python3 -m pytest -q`）。真实的 OpenVPN 连接、策略路由与 `7928` 代理网关复用同一套已验证的引擎逻辑（`LegacyEngineConnector` 驱动），因此**只有一套系统、一套服务、一个进程**，不存在"新旧并行"的两套后端。
+系统按 [`docs/DESIGN.md`](docs/DESIGN.md) 的设计分层实现（发现 → 节点池 → 健康检查 → 策略引擎 → 出口管理 → 仪表盘），代码在 `smart_vpngate/` 包内，全部分层均已实现并通过 **121 项单元测试**（`python3 -m pytest -q`）。真实的 OpenVPN 连接、策略路由与 `7928` 代理网关复用同一套已验证的引擎逻辑（`LegacyEngineConnector` 驱动），因此**只有一套系统、一套服务、一个进程**，不存在"新旧并行"的两套后端。已在真实 VPS（Ubuntu 24.04，root+TUN）上完整验证过一次一键部署 + 真实隧道 + 代理转发 + 故障自动切换。
 
 进度与已知缺口（日志面板、网页端上游代理配置、UDP 专用探针等）见 [`docs/STATUS.md`](docs/STATUS.md)。
 
@@ -178,7 +178,7 @@ python3 -m smart_vpngate status
 #### 运行测试
 
 ```bash
-python3 -m pytest -q      # 118 项离线单元测试（六层 + 端到端 + Web UI + 引擎对接 + 鉴权）
+python3 -m pytest -q      # 121 项离线单元测试（六层 + 端到端 + Web UI + 引擎对接 + 鉴权）
 ```
 
 ---
@@ -314,7 +314,7 @@ To prevent unauthorized scanning and abuse of the proxy port on the public inter
 
 ### ⚙️ Architecture & CLI Reference
 
-The system is implemented per the layered design in [`docs/DESIGN.md`](docs/DESIGN.md) (Discovery → Node Pool → Health Check → Policy Engine → Exit Manager → Dashboard), living in the `smart_vpngate/` package. All layers are implemented and covered by **118 unit tests** (`python3 -m pytest -q`). The real OpenVPN connection, policy routing, and the `7928` proxy gateway reuse the same proven engine logic (driven via `LegacyEngineConnector`) — so this is **one system, one service, one process**, not two parallel backends.
+The system is implemented per the layered design in [`docs/DESIGN.md`](docs/DESIGN.md) (Discovery → Node Pool → Health Check → Policy Engine → Exit Manager → Dashboard), living in the `smart_vpngate/` package. All layers are implemented and covered by **121 unit tests** (`python3 -m pytest -q`). The real OpenVPN connection, policy routing, and the `7928` proxy gateway reuse the same proven engine logic (driven via `LegacyEngineConnector`) — so this is **one system, one service, one process**, not two parallel backends. Fully verified end-to-end on a real Ubuntu 24.04 VPS (root+TUN): one-click install, a real tunnel, proxy relay, and automatic failover all confirmed working.
 
 Progress and known gaps (log panel, upstream-proxy web UI, a dedicated UDP probe, etc.) are tracked in [`docs/STATUS.md`](docs/STATUS.md).
 
@@ -347,7 +347,7 @@ python3 -m smart_vpngate status
 
 Key `web` flags: `--auth/--no-auth`, `--password`, `--secret-path` (auth is on by default for the `vpngate` provider and reuses existing credentials), `--minimal-connector` (fall back to the built-in minimal OpenVPN starter, skipping hardened routing/proxy), `--no-proxy` (don't start the 7928 gateway), `--proxy-host`/`--proxy-port`. Full flag list: `python3 -m smart_vpngate web --help`.
 
-**Run tests:** `python3 -m pytest -q` (118 offline unit tests).
+**Run tests:** `python3 -m pytest -q` (121 offline unit tests).
 
 ---
 
