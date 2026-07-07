@@ -123,11 +123,12 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 
 ---
 
-### 🧭 Smart VPNGate V2（新架构 · 开发预览）
+### 🧭 Smart VPNGate — 智能出口管理器（Smart Exit Manager）
 
-项目正在按 [`docs/DESIGN.md`](docs/DESIGN.md) 向**策略驱动的智能出口管理器（Smart Exit Manager）**演进。新架构以独立分层的 `smart_vpngate` Python 包实现，**与现有 `vpngate_manager.py` 并存、互不影响**，逐层交付。
+按 [`docs/DESIGN.md`](docs/DESIGN.md) 实现的**策略驱动智能出口管理器**,是**一套完整系统**:分层的 `smart_vpngate`(发现/池/健康/策略/出口/仪表盘)负责决策与界面,底层的 OpenVPN 连接、策略路由与 `127.0.0.1:7928` 代理网关负责执行——同一个进程、同一套服务、一个带鉴权的网页面板。
 
-> ⚠️ **当前状态：新内核六层全部实现并通过单元测试（113 项）；已做成单一服务——新大脑驱动旧引擎（OpenVPN+路由）+ 复用 7928 代理 + 带鉴权的网页仪表盘，`install.sh` 已切换为启动它。** 可用 `fake` provider 离线端到端跑通整条调度链路与 UI。真实出口（`vpngate` provider）需在具备 root 与 TUN 设备的 VPS 上验证真实隧道。
+> ✅ **状态**:全部分层实现并通过 **115 项单元测试**;`install.sh`/systemd 启动这套单一服务(端口 8787,鉴权沿用随机密钥路径+密码)。`fake` provider 可离线端到端跑通调度与 UI。
+> ⚠️ **需真机验证**:真实 OpenVPN 隧道、策略路由生效、7928 代理转发,只能在具备 root+TUN+openvpn 的 VPS 上验证(见 [`docs/STATUS.md`](docs/STATUS.md) 的待验证清单)。
 
 #### 分层进度
 
@@ -146,7 +147,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 | **Dashboard** | 当前出口面板 + 节点表（只读，经 ExitManager） | ✅ 已完成 |
 | **Web UI** | 纯标准库网页仪表盘：实时刷新、排序/过滤/搜索、手动切换 | ✅ 已完成 |
 
-> 说明：完整"智能出口"闭环（发现→池→健康→策略→出口→**网页面板**）已打通并可运行。新内核通过 `LegacyEngineConnector` **驱动旧引擎**（OpenVPN+路由）并复用旧的 7928 代理，`install.sh` 已切换为启动这套单一服务，旧 UI 不再单独运行。剩下的是真机端到端验证与 V3 的 GeoIP/ISP/ASN 富化（见 `docs/DESIGN.md`）。
+> 说明：完整"智能出口"闭环（发现→池→健康→策略→出口→**网页面板**）已打通。调度层通过 `LegacyEngineConnector` 驱动底层 OpenVPN 引擎（连接+策略路由）并复用 `7928` 代理网关，`install.sh` 启动这一套服务。待办与待验证见 [`docs/STATUS.md`](docs/STATUS.md)；富化能力（GeoIP/ISP/ASN）属 V3（见 `docs/DESIGN.md`）。
 
 #### 配置文件
 
@@ -164,9 +165,9 @@ cp config.example.yaml config.yaml
 2. **按国家分别配额** —— `discovery.per_country_limits`（如 `JP: 50, KR: 30`）为不同国家单独设定数量，未列出的国家用全局值。
 3. **失效切换：同国优先，其次最快** —— 当前出口失效时，先在**同一国家**里选下一个健康节点；该国已无可用节点时，`policy.fallback_fastest: true`（默认）会回退到**全局最快**的健康节点，避免出口空缺。
 
-> 🧩 **零依赖**：新内核仍保持"纯标准库"。已安装 PyYAML 时优先使用，未安装时自动回退到内置的最小 YAML 解析器，因此在 `install.sh` 部署出的 stock `python3` 上无需 pip 即可运行。
+> 🧩 **零依赖**：系统保持"纯标准库"。已安装 PyYAML 时优先使用，未安装时自动回退到内置的最小 YAML 解析器，因此在 `install.sh` 部署出的 stock `python3` 上无需 pip 即可运行。
 
-> 🚀 **单一服务部署**：`install.sh` 与 systemd/OpenRC 服务已切换为启动**一套新服务**（`python3 -m smart_vpngate web --provider vpngate --port 8787`）——新大脑 + 旧引擎 + 7928 代理 + 带鉴权的网页仪表盘，全在一个进程里，端口沿用 8787、鉴权沿用旧版的随机密钥路径+密码。旧的 `vpngate_manager.py` 作为被驱动的引擎保留，不再单独起 UI。⚠️ 该切换需在真机（root+TUN+openvpn）验证真实隧道。
+> 🚀 **单一服务**：`install.sh` 与 systemd/OpenRC 启动一套服务 `python3 -m smart_vpngate web --provider vpngate --port 8787`——调度 + OpenVPN 引擎（连接/策略路由）+ `7928` 代理网关 + 带鉴权的网页仪表盘，全在一个进程里。⚠️ 真实隧道需在具备 root+TUN+openvpn 的 VPS 上验证。
 
 #### 命令行用法
 
@@ -239,7 +240,7 @@ python3 -m smart_vpngate status
 #### 运行测试
 
 ```bash
-python3 -m pytest -q      # 113 项离线单元测试（六层 + 端到端 + Web UI + 引擎对接 + 鉴权）
+python3 -m pytest -q      # 115 项离线单元测试（六层 + 端到端 + Web UI + 引擎对接 + 鉴权）
 ```
 
 ---
@@ -352,7 +353,7 @@ The project is evolving toward a **policy-driven Smart Exit Manager** per
 `smart_vpngate` Python package that lives **alongside** the current
 `vpngate_manager.py` without disturbing it, delivered layer by layer.
 
-> ⚠️ **Status: all six layers implemented and unit-tested (113 tests); the whole
+> ⚠️ **Status: all six layers implemented and unit-tested (115 tests); the whole
 > scheduling chain runs end-to-end offline via the `fake` provider.** The
 > one-click install and Web UI above are still served by the existing AimiliVPN;
 > `smart_vpngate` runs alongside it. A real exit (the `vpngate` provider) needs a
@@ -396,7 +397,7 @@ Table with one-click manual switch; it auto-refreshes and talks only to the Exit
 Manager (`GET /api/status`, `POST /api/switch`). Default port `8686` (distinct
 from the legacy UI's `8787`, so both can run side by side).
 
-**Run tests:** `python3 -m pytest -q` (113 offline unit tests).
+**Run tests:** `python3 -m pytest -q` (115 offline unit tests).
 
 > 🧩 **Zero-dependency:** the new core stays pure-stdlib. PyYAML is used when
 > installed, otherwise a tiny built-in YAML parser handles the config, so it runs

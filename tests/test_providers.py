@@ -98,6 +98,49 @@ def test_vpngate_status_detects_drop():
     assert not p.status().connected
 
 
+def test_ip_lookup_routes_through_proxy():
+    from smart_vpngate.providers.vpngate import _default_ip_lookup
+    import urllib.request
+
+    captured = {}
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b"203.0.113.55\n"
+
+    class _Opener:
+        def open(self, url, timeout=0): return _Resp()
+
+    def factory(*handlers):
+        captured["handlers"] = handlers
+        return _Opener()
+
+    ip = _default_ip_lookup("http://127.0.0.1:7928", opener_factory=factory)
+    assert ip == "203.0.113.55"
+    # A ProxyHandler must have been installed (so the query goes via the tunnel).
+    assert any(isinstance(h, urllib.request.ProxyHandler) for h in captured["handlers"])
+
+
+def test_ip_lookup_direct_when_no_proxy():
+    from smart_vpngate.providers.vpngate import _default_ip_lookup
+
+    captured = {}
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b"198.51.100.1"
+
+    def factory(*handlers):
+        captured["handlers"] = handlers
+        return type("O", (), {"open": lambda self, url, timeout=0: _Resp()})()
+
+    ip = _default_ip_lookup(None, opener_factory=factory)
+    assert ip == "198.51.100.1"
+    assert captured["handlers"] == ()          # no proxy handler when direct
+
+
 def test_vpngate_discover_parses_feed():
     cfg = base64.b64encode(b"proto tcp\nremote 1.1.1.1 443\n").decode()
     header = ("#HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,"

@@ -141,11 +141,17 @@ def _build_app(args: argparse.Namespace) -> SmartExitManager:
         from .providers.vpngate import VPNGateProvider
         # New design: the brain drives the OLD proven engine (OpenVPN + hardened
         # routing). Use the minimal built-in connector only if explicitly asked.
+        # Public-IP query routes through the gateway (exit IP, not VPS IP),
+        # unless the proxy is disabled.
+        proxy_url = (None if getattr(args, "no_proxy", False)
+                     else f"http://{getattr(args, 'proxy_host', '127.0.0.1')}:"
+                          f"{getattr(args, 'proxy_port', 7928)}")
         if getattr(args, "minimal_connector", False):
-            provider = VPNGateProvider(api_url=args.url)
+            provider = VPNGateProvider(api_url=args.url, proxy_url=proxy_url)
         else:
             from .providers.legacy import LegacyEngineConnector
-            provider = VPNGateProvider(connector=LegacyEngineConnector(), api_url=args.url)
+            provider = VPNGateProvider(connector=LegacyEngineConnector(),
+                                       api_url=args.url, proxy_url=proxy_url)
         fetcher = http_fetcher(args.url)
         probe = tcp_probe()
     return SmartExitManager.build(config, provider=provider, fetcher=fetcher,

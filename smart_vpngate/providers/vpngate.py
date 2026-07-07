@@ -91,10 +91,24 @@ class SubprocessOpenVPNConnector:
             cfg.unlink(missing_ok=True)
 
 
-def _default_ip_lookup() -> str:
+def _default_ip_lookup(
+    proxy_url: str | None = None,
+    opener_factory: Callable[..., object] = urllib.request.build_opener,
+) -> str:
+    """Return the observed public egress IP.
+
+    When ``proxy_url`` is set (the running 7928 gateway), the query is routed
+    **through the tunnel** via that proxy, so it reflects the exit IP rather than
+    the VPS's own IP — the default route does not go through ``tun0`` under
+    ``--route-nopull``. ``opener_factory`` is injected for tests.
+    """
+    handlers = []
+    if proxy_url:
+        handlers.append(urllib.request.ProxyHandler({"http": proxy_url, "https": proxy_url}))
+    opener = opener_factory(*handlers)
     for url in ("https://api.ipify.org", "http://api.ipify.org"):
         try:
-            with urllib.request.urlopen(url, timeout=10) as resp:
+            with opener.open(url, timeout=10) as resp:
                 return resp.read().decode().strip()
         except Exception:  # noqa: BLE001 - try the next endpoint
             continue
@@ -110,10 +124,13 @@ class VPNGateProvider(Provider):
         fetcher: Callable[[], str] | None = None,
         ip_lookup: Callable[[], str] | None = None,
         api_url: str = DEFAULT_API_URL,
+        proxy_url: str | None = "http://127.0.0.1:7928",
     ) -> None:
         self._connector = connector or SubprocessOpenVPNConnector()
         self._fetcher = fetcher or http_fetcher(api_url)
-        self._ip_lookup = ip_lookup or _default_ip_lookup
+        # Route the public-IP query through the local gateway so it reports the
+        # exit IP (through the tunnel), not the VPS IP.
+        self._ip_lookup = ip_lookup or (lambda: _default_ip_lookup(proxy_url))
         self._handle: object | None = None
         self._current: Node | None = None
         self._public_ip: str = ""
