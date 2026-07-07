@@ -228,6 +228,7 @@ def load_ui_config() -> dict[str, Any]:
             "fixed_node_id": "",
             "favorite_node_ids": [],
             "fav_fail_fallback": False,
+            "region_fail_fallback": False,
             "discovery_countries": []
         }
         updated = False
@@ -236,7 +237,7 @@ def load_ui_config() -> dict[str, Any]:
                 data = json.loads(auth_file.read_text(encoding="utf-8"))
                 for key, val in data.items():
                     config[key] = val
-                for key in ["host", "port", "proxy_port", "routing_mode", "force_country", "routing_ip_type", "connection_enabled", "fixed_node_id", "favorite_node_ids", "fav_fail_fallback", "discovery_countries"]:
+                for key in ["host", "port", "proxy_port", "routing_mode", "force_country", "routing_ip_type", "connection_enabled", "fixed_node_id", "favorite_node_ids", "fav_fail_fallback", "region_fail_fallback", "discovery_countries"]:
                     if key not in data:
                         updated = True
             except Exception:
@@ -381,6 +382,7 @@ def get_state() -> dict[str, Any]:
     state["fixed_node_id"] = ui_cfg.get("fixed_node_id", "")
     state["favorite_node_ids"] = ui_cfg.get("favorite_node_ids", [])
     state["fav_fail_fallback"] = False
+    state["region_fail_fallback"] = bool(ui_cfg.get("region_fail_fallback", False))
     state["discovery_countries"] = ui_cfg.get("discovery_countries", [])
     
     return state
@@ -1239,6 +1241,40 @@ def current_fixed_node_id(ui_cfg: dict[str, Any]) -> str:
         return str(active_node.get("id") or "")
     return str(ui_cfg.get("fixed_node_id") or "").strip()
 
+def region_fallback_enabled(ui_cfg: dict[str, Any]) -> bool:
+    return (
+        ui_cfg.get("routing_mode", "auto") == "fixed_region"
+        and bool(ui_cfg.get("force_country", ""))
+        and bool(ui_cfg.get("region_fail_fallback", False))
+    )
+
+def locked_country_has_available_nodes(ui_cfg: dict[str, Any]) -> bool:
+    target_country = ui_cfg.get("force_country", "")
+    if not target_country:
+        return False
+    return any(
+        n.get("probe_status") == "available"
+        and country_matches(n.get("country"), target_country)
+        for n in read_nodes()
+    )
+
+def filter_switch_candidates(
+    nodes: list[dict[str, Any]],
+    ui_cfg: dict[str, Any],
+    include_unknown_ip_type: bool = False,
+) -> tuple[list[dict[str, Any]], bool]:
+    """按路由规则筛选可切换候选；固定地区无候选且允许兜底时，放宽到全部国家。
+
+    返回 (candidates, fallback_used)。兜底只放宽国家限制，IP 出站类型过滤仍然生效。
+    """
+    candidates = apply_routing_filters(nodes, ui_cfg, include_unknown_ip_type)
+    if not candidates and region_fallback_enabled(ui_cfg):
+        relaxed_cfg = dict(ui_cfg)
+        relaxed_cfg["routing_mode"] = "auto"
+        candidates = apply_routing_filters(nodes, relaxed_cfg, include_unknown_ip_type)
+        return candidates, bool(candidates)
+    return candidates, False
+
 def validate_node_allowed_by_routing(node: dict[str, Any], ui_cfg: dict[str, Any]) -> None:
     routing_mode = ui_cfg.get("routing_mode", "auto")
     node_id = str(node.get("id") or "")
@@ -1246,7 +1282,9 @@ def validate_node_allowed_by_routing(node: dict[str, Any], ui_cfg: dict[str, Any
     if routing_mode == "fixed_region":
         target_country = ui_cfg.get("force_country", "")
         if target_country and not country_matches(node.get("country"), target_country):
-            raise RuntimeError(f"当前已锁定国家【{target_country}】，不能连接其他国家节点")
+            # 允许兜底时，仅在锁定国家当前确实没有任何可用节点的情况下放行其他国家
+            if not (region_fallback_enabled(ui_cfg) and not locked_country_has_available_nodes(ui_cfg)):
+                raise RuntimeError(f"当前已锁定国家【{target_country}】，不能连接其他国家节点")
     elif routing_mode == "favorites":
         fav_ids = set(ui_cfg.get("favorite_node_ids", []))
         if node_id not in fav_ids:
@@ -1547,17 +1585,22 @@ def auto_switch_node(attempt: int = 0) -> None:
     with lock:
         nodes = read_nodes()
         candidates = [
-            n for n in nodes 
-            if n.get("probe_status") == "available" 
+            n for n in nodes
+            if n.get("probe_status") == "available"
             and not n.get("active")
         ]
-        candidates = apply_routing_filters(candidates, ui_cfg)
-            
+        candidates, region_fallback_used = filter_switch_candidates(candidates, ui_cfg)
+
         candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
-        
+
     if candidates:
         next_node = candidates[0]
         msg = f"当前连接已失效或代理连通性检测失败，正在自动切换至最佳备用节点: {next_node['id']}"
+        if region_fallback_used:
+            msg = (
+                f"锁定国家【{target_country}】当前没有任何可用节点，已按配置临时切换到其他国家的最佳节点: "
+                f"{next_node['id']}（该国恢复可用节点后，下次切换将优先回到该国）"
+            )
         print(f"[自动切换] {msg}", flush=True)
         log_to_json("INFO", "VPN", msg)
         try:
@@ -1570,7 +1613,10 @@ def auto_switch_node(attempt: int = 0) -> None:
     else:
         msg = "没有可用的备选节点，将自动断开并清理当前连接状态，同时在后台异步获取新节点..."
         if routing_mode == "fixed_region" and target_country:
-            msg = f"没有可用的【{target_country}】备选节点，已断开连接，将在后台持续尝试获取新节点..."
+            if region_fallback_enabled(ui_cfg):
+                msg = f"没有可用的【{target_country}】备选节点，其他国家也暂无可用兜底节点，已断开连接，将在后台持续尝试获取新节点..."
+            else:
+                msg = f"没有可用的【{target_country}】备选节点，已断开连接，将在后台持续尝试获取新节点..."
         print(f"[自动切换] {msg}", flush=True)
         log_to_json("WARNING", "VPN", msg)
         stop_active_openvpn()
@@ -1837,7 +1883,7 @@ def maintain_valid_nodes(force: bool = False, target_countries: list[str] | None
                     n for n in current_nodes
                     if not n.get("active") and n.get("probe_status") != "unavailable"
                 ]
-                fast_candidates = apply_routing_filters(fast_candidates, ui_cfg, include_unknown_ip_type=True)
+                fast_candidates, _ = filter_switch_candidates(fast_candidates, ui_cfg, include_unknown_ip_type=True)
                 fast_candidates.sort(key=probe_priority_key)
                 fast_test_ids = [
                     n["id"] for n in fast_candidates
@@ -1858,7 +1904,7 @@ def maintain_valid_nodes(force: bool = False, target_countries: list[str] | None
                         n for n in fast_nodes
                         if n.get("probe_status") == "available" and not n.get("active")
                     ]
-                    available_candidates = apply_routing_filters(available_candidates, ui_cfg)
+                    available_candidates, _ = filter_switch_candidates(available_candidates, ui_cfg)
 
                 if available_candidates:
                     is_connecting = False
@@ -1923,8 +1969,8 @@ def maintain_valid_nodes(force: bool = False, target_countries: list[str] | None
                     
                     if routing_mode != "fixed_ip":
                         available_candidates = [n for n in merged if n.get("probe_status") == "available"]
-                        available_candidates = apply_routing_filters(available_candidates, ui_cfg)
-                        
+                        available_candidates, _ = filter_switch_candidates(available_candidates, ui_cfg)
+
                         if available_candidates:
                             auto_switch_node()
 
@@ -3493,6 +3539,10 @@ INDEX_HTML = r"""<!doctype html>
             <select id="net_force_country" class="input-field" style="background: rgba(255, 255, 255, 0.03); border: 1px solid var(--border-color); color: var(--text-primary); outline: none; cursor: pointer; width: 100%; height: 40px; border-radius: 8px; padding: 0 12px;">
               <option value="">正在加载节点国家...</option>
             </select>
+            <label for="net_region_fallback" style="display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; cursor: pointer; font-size: 12.5px; color: var(--text-secondary); line-height: 1.5;">
+              <input type="checkbox" id="net_region_fallback" style="width: 15px; height: 15px; margin: 2px 0 0 0; flex: 0 0 auto; accent-color: var(--primary); cursor: pointer;">
+              <span>该国家没有任何可用节点时，允许临时切换到其他国家的最快节点（该国恢复可用节点后，下次切换将优先回到该国）</span>
+            </label>
           </div>
           
           <div class="form-group" style="margin-bottom: 16px;">
@@ -4555,7 +4605,7 @@ function handleRoutingModeChange(mode) {
     warningDiv.style.color = "var(--warning)";
     warningDiv.style.background = "rgba(245, 158, 11, 0.1)";
     warningDiv.style.border = "1px solid rgba(245, 158, 11, 0.2)";
-    warningDiv.innerHTML = `⚠️ <strong>固定地区</strong>：限制仅连接选定国家的节点，且后台仅并发测速该国家的节点。如果该国的所有可用节点都失效，会造成代理中断且<strong>绝不自动切换到其他国家</strong>的节点。`;
+    warningDiv.innerHTML = `⚠️ <strong>固定地区</strong>：限制仅连接选定国家的节点，且后台优先测速该国家的节点。如果该国的所有可用节点都失效，默认会造成代理中断且<strong>绝不自动切换到其他国家</strong>的节点；如需在该国无可用节点时临时使用其他国家兜底，请勾选上方选项。`;
   } else if (mode === "favorites") {
     countryGroup.style.display = "none";
     warningDiv.style.color = "var(--warning)";
@@ -4723,8 +4773,9 @@ function openNetworkModal() {
     
     selectOptionCard('routing_mode', mode);
     selectOptionCard('routing_ip_type', ipType);
+    $("net_region_fallback").checked = !!state.region_fail_fallback;
   }
-  
+
   populateRoutingCountries();
   $("network_modal").style.display = "flex";
   $("admin_dropdown").style.display = "none";
@@ -4782,7 +4833,8 @@ async function saveNetwork(e) {
         proxy_port: proxyPort,
         routing_mode: routingMode,
         force_country: forceCountry,
-        routing_ip_type: routingIpType
+        routing_ip_type: routingIpType,
+        region_fail_fallback: $("net_region_fallback").checked
       })
     });
     
@@ -5675,6 +5727,8 @@ class Handler(BaseHTTPRequestHandler):
                 ui_cfg["routing_mode"] = routing_mode
                 ui_cfg["force_country"] = force_country
                 ui_cfg["routing_ip_type"] = routing_ip_type
+                if "region_fail_fallback" in payload:
+                    ui_cfg["region_fail_fallback"] = bool(payload.get("region_fail_fallback"))
                 if routing_mode == "favorites":
                     ui_cfg["fav_fail_fallback"] = False
                 if routing_mode == "fixed_ip":
