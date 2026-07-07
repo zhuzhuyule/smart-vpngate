@@ -4,6 +4,10 @@ Everything is YAML (see ``config.example.yaml``). This module defines typed
 dataclasses for each section of the design's config schema, loads a YAML file
 on top of sane defaults, and normalizes/validates the result.
 
+The project ships zero-dependency: PyYAML is used when installed, otherwise a
+tiny stdlib fallback (:mod:`smart_vpngate._yaml`) parses the config subset. So
+loading works on a stock ``python3`` with no pip packages.
+
 Loading never raises on a missing file — defaults are returned — so the system
 can boot with zero configuration.
 """
@@ -14,7 +18,18 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
-import yaml
+try:  # Prefer PyYAML when available; fall back to the stdlib subset parser.
+    import yaml as _yaml
+    _YAMLError: type[Exception] = getattr(_yaml, "YAMLError", ValueError)
+
+    def _yaml_load(text: str) -> Any:
+        return _yaml.safe_load(text)
+except ImportError:  # pragma: no cover - exercised on stock installs
+    from . import _yaml as _stdlib_yaml
+    _YAMLError = ValueError
+
+    def _yaml_load(text: str) -> Any:
+        return _stdlib_yaml.safe_load(text)
 
 
 def _as_str_list(value: Any) -> list[str]:
@@ -136,8 +151,8 @@ class Config:
         if not p.exists():
             return cls().normalized()
         try:
-            raw = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-        except yaml.YAMLError as exc:
+            raw = _yaml_load(p.read_text(encoding="utf-8")) or {}
+        except _YAMLError as exc:
             raise ValueError(f"Invalid YAML config at {p}: {exc}") from exc
         if not isinstance(raw, dict):
             raise ValueError(f"Config root must be a mapping, got {type(raw).__name__}")

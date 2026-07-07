@@ -127,7 +127,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 
 项目正在按 [`docs/DESIGN.md`](docs/DESIGN.md) 向**策略驱动的智能出口管理器（Smart Exit Manager）**演进。新架构以独立分层的 `smart_vpngate` Python 包实现，**与现有 `vpngate_manager.py` 并存、互不影响**，逐层交付。
 
-> ⚠️ **当前状态：新内核六层已全部实现并通过单元测试（81 项），可用 `fake` provider 离线端到端跑通整条调度链路。** 上面的一键部署与 Web 面板仍由现有的 AimiliVPN（`vpngate_manager.py`）提供；`smart_vpngate` 新内核与其并存。真实出口（`vpngate` provider）需在具备 root 与 TUN 设备的 VPS 上运行 OpenVPN。
+> ⚠️ **当前状态：新内核六层已全部实现并通过单元测试（88 项），可用 `fake` provider 离线端到端跑通整条调度链路。** 上面的一键部署与 Web 面板仍由现有的 AimiliVPN（`vpngate_manager.py`）提供；`smart_vpngate` 新内核与其并存。真实出口（`vpngate` provider）需在具备 root 与 TUN 设备的 VPS 上运行 OpenVPN。
 
 #### 分层进度
 
@@ -156,6 +156,8 @@ cp config.example.yaml config.yaml
 ```
 
 关键字段：`discovery.countries`（国家白名单）、`discovery.blacklist`（黑名单）、`discovery.protocols`、`policy.mode`（`locked-country`/`priority`/`auto`）、`policy.country`、`health.interval`。完整示例见 [`config.example.yaml`](config.example.yaml)。
+
+> 🧩 **零依赖**：新内核仍保持"纯标准库"。已安装 PyYAML 时优先使用，未安装时自动回退到内置的最小 YAML 解析器，因此在 `install.sh` 部署出的 stock `python3` 上无需 pip 即可运行；`install.sh` 与 systemd 启动脚本无需改动（它们仍负责启动现有的 `vpngate_manager.py`）。
 
 #### 命令行用法
 
@@ -207,7 +209,7 @@ python3 -m smart_vpngate status
 #### 运行测试
 
 ```bash
-python3 -m pytest -q      # 81 项离线单元测试（覆盖全部六层 + 端到端）
+python3 -m pytest -q      # 88 项离线单元测试（覆盖全部六层 + 端到端）
 ```
 
 ---
@@ -320,7 +322,7 @@ The project is evolving toward a **policy-driven Smart Exit Manager** per
 `smart_vpngate` Python package that lives **alongside** the current
 `vpngate_manager.py` without disturbing it, delivered layer by layer.
 
-> ⚠️ **Status: all six layers implemented and unit-tested (81 tests); the whole
+> ⚠️ **Status: all six layers implemented and unit-tested (88 tests); the whole
 > scheduling chain runs end-to-end offline via the `fake` provider.** The
 > one-click install and Web UI above are still served by the existing AimiliVPN;
 > `smart_vpngate` runs alongside it. A real exit (the `vpngate` provider) needs a
@@ -357,7 +359,13 @@ python3 -m smart_vpngate run --provider vpngate           # real run on a VPS
 python3 -m smart_vpngate status                           # print last dashboard
 ```
 
-**Run tests:** `python3 -m pytest -q` (81 offline unit tests).
+**Run tests:** `python3 -m pytest -q` (88 offline unit tests).
+
+> 🧩 **Zero-dependency:** the new core stays pure-stdlib. PyYAML is used when
+> installed, otherwise a tiny built-in YAML parser handles the config, so it runs
+> on the stock `python3` from `install.sh` with no pip packages. `install.sh` and
+> the systemd unit need no changes — they still launch the existing
+> `vpngate_manager.py`.
 
 ---
 
