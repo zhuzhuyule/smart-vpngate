@@ -8,6 +8,7 @@ used for tests and demos (and by ``python -m smart_vpngate run --provider fake``
 from __future__ import annotations
 
 from .fake import FakeProvider
+from .legacy import LegacyEngineConnector
 from .vpngate import VPNGateProvider
 
-__all__ = ["FakeProvider", "VPNGateProvider"]
+__all__ = ["FakeProvider", "VPNGateProvider", "LegacyEngineConnector"]

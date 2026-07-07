@@ -186,6 +186,8 @@ python3 -m smart_vpngate run --provider fake --once
 python3 -m smart_vpngate run --provider vpngate --config config.yaml
 ```
 
+> 🔌 **一个引擎 + 一个大脑**：`--provider vpngate` 时，新内核（大脑：发现/池/健康/策略/UI）通过 `LegacyEngineConnector` **驱动旧引擎**（`vpngate_manager` 的 OpenVPN 连接 + 策略路由 + `rp_filter` 加固），并复用旧的 **7928 SOCKS5/HTTP 代理网关**。也就是说**不存在两套引擎**：真实连接与代理都用旧的已验证能力，新代码只负责决策与界面。`--minimal-connector` 可退回内置最小启动器（无加固/无代理），`--no-proxy` 可不启代理。
+
 `run --provider fake --once` 输出示例：
 
 ```
@@ -235,7 +237,7 @@ python3 -m smart_vpngate status
 #### 运行测试
 
 ```bash
-python3 -m pytest -q      # 93 项离线单元测试（六层 + 端到端 + Web UI）
+python3 -m pytest -q      # 104 项离线单元测试（六层 + 端到端 + Web UI + 引擎对接）
 ```
 
 ---
@@ -392,7 +394,7 @@ Table with one-click manual switch; it auto-refreshes and talks only to the Exit
 Manager (`GET /api/status`, `POST /api/switch`). Default port `8686` (distinct
 from the legacy UI's `8787`, so both can run side by side).
 
-**Run tests:** `python3 -m pytest -q` (93 offline unit tests).
+**Run tests:** `python3 -m pytest -q` (104 offline unit tests).
 
 > 🧩 **Zero-dependency:** the new core stays pure-stdlib. PyYAML is used when
 > installed, otherwise a tiny built-in YAML parser handles the config, so it runs

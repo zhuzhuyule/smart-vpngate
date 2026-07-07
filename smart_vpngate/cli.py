@@ -139,15 +139,34 @@ def _build_app(args: argparse.Namespace) -> SmartExitManager:
         probe = null_probe
     else:
         from .providers.vpngate import VPNGateProvider
-        provider = VPNGateProvider(api_url=args.url)
+        # New design: the brain drives the OLD proven engine (OpenVPN + hardened
+        # routing). Use the minimal built-in connector only if explicitly asked.
+        if getattr(args, "minimal_connector", False):
+            provider = VPNGateProvider(api_url=args.url)
+        else:
+            from .providers.legacy import LegacyEngineConnector
+            provider = VPNGateProvider(connector=LegacyEngineConnector(), api_url=args.url)
         fetcher = http_fetcher(args.url)
         probe = tcp_probe()
     return SmartExitManager.build(config, provider=provider, fetcher=fetcher,
                                   probe=probe, cache_path=args.cache)
 
 
+def _maybe_start_gateway(args: argparse.Namespace) -> None:
+    """Start the legacy 7928 proxy gateway for real (vpngate) runs."""
+    if args.provider != "vpngate" or getattr(args, "no_proxy", False):
+        return
+    try:
+        from .gateway import start_proxy_gateway
+        start_proxy_gateway(args.proxy_host, args.proxy_port)
+        print(f"proxy gateway (SOCKS5/HTTP) on {args.proxy_host}:{args.proxy_port}")
+    except Exception as exc:  # noqa: BLE001 - proxy is best-effort
+        print(f"warning: could not start proxy gateway: {exc}", file=sys.stderr)
+
+
 def _cmd_run(args: argparse.Namespace) -> int:
     app = _build_app(args)
+    _maybe_start_gateway(args)
     try:
         if args.once:
             app.run(once=True)
@@ -172,6 +191,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
 def _cmd_web(args: argparse.Namespace) -> int:
     from .web import DashboardServer
     app = _build_app(args)
+    _maybe_start_gateway(args)
     server = DashboardServer(app, host=args.host, port=args.port,
                              tick_interval=args.tick_interval)
     shown_host = "[::]" if args.host in ("::", "") else args.host
@@ -212,6 +232,19 @@ def _cmd_status(args: argparse.Namespace) -> int:
 
 
 # --------------------------------------------------------------------------- #
+def _add_engine_args(p: argparse.ArgumentParser) -> None:
+    """Engine/gateway options shared by 'run' and 'web' (real vpngate runs)."""
+    p.add_argument("--minimal-connector", action="store_true",
+                   help="use the built-in minimal OpenVPN starter instead of the "
+                        "legacy engine (no hardened routing / proxy)")
+    p.add_argument("--no-proxy", action="store_true",
+                   help="do not start the 7928 SOCKS5/HTTP proxy gateway")
+    p.add_argument("--proxy-host", default="127.0.0.1",
+                   help="proxy gateway bind host (default: 127.0.0.1)")
+    p.add_argument("--proxy-port", type=int, default=7928,
+                   help="proxy gateway bind port (default: 7928)")
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="smart_vpngate",
@@ -242,6 +275,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="run a single tick then print the dashboard and exit")
     r.add_argument("--max-ticks", type=int, default=None,
                    help="stop after N ticks (default: run forever)")
+    _add_engine_args(r)
     r.set_defaults(func=_cmd_run)
 
     w = sub.add_parser("web", help="serve the web dashboard (current exit + node table)")
@@ -255,6 +289,7 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--tick-interval", type=float, default=None,
                    help="seconds between background health/policy ticks "
                         "(default: health.interval from config)")
+    _add_engine_args(w)
     w.set_defaults(func=_cmd_web)
 
     s = sub.add_parser("status", help="print the dashboard from the last cache")
