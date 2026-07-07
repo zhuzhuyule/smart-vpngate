@@ -188,15 +188,47 @@ def _cmd_run(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------- #
 # web
 # --------------------------------------------------------------------------- #
+def _build_auth(args: argparse.Namespace):
+    """Build the dashboard Auth, or None. Default: on for vpngate, off for fake."""
+    from .auth import Auth, generate_password, generate_secret_path
+    if getattr(args, "no_auth", False):
+        return None
+    want = getattr(args, "auth", False) or args.provider == "vpngate"
+    password = getattr(args, "password", None) or ""
+    secret = getattr(args, "secret_path", None) or ""
+    if not want and not password:
+        return None
+    if not password or not secret:
+        # Reuse the legacy credentials so it's the same login as before.
+        try:
+            import vpngate_manager as eng
+            cfg = eng.load_ui_config()
+            password = password or (cfg.get("password") or "")
+            secret = secret or (cfg.get("secret_path") or "")
+        except Exception:  # noqa: BLE001 - legacy config optional
+            pass
+    if not password:
+        password = generate_password()
+    if not secret:
+        secret = generate_secret_path()
+    return Auth(password=password, secret_path=secret)
+
+
 def _cmd_web(args: argparse.Namespace) -> int:
     from .web import DashboardServer
     app = _build_app(args)
     _maybe_start_gateway(args)
+    auth = _build_auth(args)
     server = DashboardServer(app, host=args.host, port=args.port,
-                             tick_interval=args.tick_interval)
+                             tick_interval=args.tick_interval, auth=auth)
     shown_host = "[::]" if args.host in ("::", "") else args.host
-    print(f"Smart VPNGate dashboard on http://{shown_host}:{args.port}/  "
-          f"(provider={args.provider}). Ctrl-C to stop.")
+    base = f"http://{shown_host}:{args.port}"
+    if auth is not None and auth.enabled:
+        print(f"Smart VPNGate dashboard: {base}{auth.prefix}/  (provider={args.provider})")
+        print(f"  login password: {auth.password}")
+    else:
+        print(f"Smart VPNGate dashboard: {base}/  (provider={args.provider}, no auth)")
+    print("Ctrl-C to stop.")
     try:
         server.start(serve=True)
     except OSError as exc:
@@ -289,6 +321,13 @@ def build_parser() -> argparse.ArgumentParser:
     w.add_argument("--tick-interval", type=float, default=None,
                    help="seconds between background health/policy ticks "
                         "(default: health.interval from config)")
+    w.add_argument("--auth", action="store_true",
+                   help="require login (default: on for vpngate, off for fake)")
+    w.add_argument("--no-auth", action="store_true", help="disable login")
+    w.add_argument("--password", default=None,
+                   help="dashboard password (default: reuse legacy config / random)")
+    w.add_argument("--secret-path", default=None,
+                   help="URL secret path prefix (default: reuse legacy / random)")
     _add_engine_args(w)
     w.set_defaults(func=_cmd_web)
 

@@ -20,8 +20,10 @@ from __future__ import annotations
 
 import json
 import threading
+import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from .auth import Auth
 from .manager import SmartExitManager
 
 _PAGE = """<!doctype html>
@@ -185,7 +187,7 @@ function fillCountries(){
 }
 async function refresh(){
   try{
-    const r=await fetch("/api/status");if(!r.ok)throw new Error("HTTP "+r.status);
+    const r=await fetch("api/status");if(!r.ok)throw new Error("HTTP "+r.status);
     last=await r.json();document.getElementById("err").textContent="";
     exitPanel(last.current_exit);fillCountries();draw();
   }catch(e){document.getElementById("err").textContent="⚠ "+e.message;}
@@ -193,7 +195,7 @@ async function refresh(){
 async function doSwitch(id){
   document.getElementById("err").textContent="switching to "+id+"…";
   try{
-    const r=await fetch("/api/switch",{method:"POST",headers:{"Content-Type":"application/json"},
+    const r=await fetch("api/switch",{method:"POST",headers:{"Content-Type":"application/json"},
       body:JSON.stringify({node_id:id})});
     if(!r.ok)throw new Error("HTTP "+r.status);
     last=await r.json();document.getElementById("err").textContent="";
@@ -209,14 +211,41 @@ refresh();
 """
 
 
+_LOGIN = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Smart VPNGate — Login</title>
+<style>
+body{margin:0;height:100vh;display:flex;align-items:center;justify-content:center;
+background:#0e1116;color:#e6edf3;font:14px -apple-system,Segoe UI,Roboto,sans-serif}
+form{background:#161b22;border:1px solid #232a34;border-radius:12px;padding:28px 26px;
+width:300px}
+h1{font-size:16px;margin:0 0 4px}p{color:#8b949e;margin:0 0 18px;font-size:12px}
+input{width:100%;background:#0e1116;border:1px solid #232a34;color:#e6edf3;
+border-radius:8px;padding:10px 12px;font-size:14px;margin-bottom:12px}
+button{width:100%;background:#3fb950;color:#03130a;border:0;border-radius:8px;
+padding:10px;font-weight:600;font-size:14px;cursor:pointer}
+.err{color:#f85149;font-size:12px;min-height:16px;margin-bottom:8px}
+</style></head><body>
+<form method="POST" action="login">
+  <h1>🌐 Smart VPNGate</h1>
+  <p>Smart Exit Manager — sign in</p>
+  <div class="err">__ERR__</div>
+  <input type="password" name="password" placeholder="password" autofocus>
+  <button type="submit">Sign in</button>
+</form></body></html>
+"""
+
+
 class DashboardServer:
     """Runs the supervise loop in the background and serves the dashboard."""
 
     def __init__(self, app: SmartExitManager, host: str = "::", port: int = 8686,
-                 tick_interval: float | None = None) -> None:
+                 tick_interval: float | None = None, auth: Auth | None = None) -> None:
         self.app = app
         self.host = host
         self.port = port
+        self.auth = auth
         self.tick_interval = (
             tick_interval if tick_interval is not None else app.config.health.interval
         )
@@ -280,43 +309,104 @@ class DashboardServer:
 
 
 def _make_handler(server: DashboardServer):
+    auth = server.auth
+    gated = auth is not None and auth.enabled
+    prefix = auth.prefix if gated else ""   # e.g. "/EJsW2EeBo9lY" or ""
+
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):  # silence default stderr logging
             pass
 
-        def _send(self, code: int, body: bytes, ctype: str) -> None:
+        # -- helpers --------------------------------------------------------
+        def _send(self, code: int, body: bytes, ctype: str, headers=None) -> None:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
+            for k, v in (headers or []):
+                self.send_header(k, v)
             self.end_headers()
             self.wfile.write(body)
 
-        def _json(self, code: int, obj) -> None:
+        def _json(self, code: int, obj, headers=None) -> None:
             self._send(code, json.dumps(obj, ensure_ascii=False).encode("utf-8"),
-                       "application/json; charset=utf-8")
+                       "application/json; charset=utf-8", headers)
 
+        def _html(self, code: int, text: str, headers=None) -> None:
+            self._send(code, text.encode("utf-8"), "text/html; charset=utf-8", headers)
+
+        def _not_found(self):
+            self._json(404, {"error": "not found"})
+
+        def _authed(self) -> bool:
+            return not gated or auth.authed(self.headers.get("Cookie", ""))
+
+        def _subpath(self, path: str):
+            """Strip the secret prefix; return the sub-path or None if off-prefix."""
+            path = path.split("?", 1)[0]
+            if not gated:
+                return path
+            if path == prefix:
+                return "/"          # bare prefix -> treat as root (will redirect)
+            if path.startswith(prefix + "/"):
+                return path[len(prefix):]
+            return None
+
+        # -- routes ---------------------------------------------------------
         def do_GET(self):  # noqa: N802
-            if self.path in ("/", "/index.html"):
-                self._send(200, _PAGE.encode("utf-8"), "text/html; charset=utf-8")
-            elif self.path == "/api/status":
-                self._json(200, server.snapshot())
-            else:
-                self._json(404, {"error": "not found"})
+            raw = self.path.split("?", 1)[0]
+            if gated and raw == prefix:
+                self._send(301, b"", "text/plain", [("Location", prefix + "/")])
+                return
+            sub = self._subpath(self.path)
+            if sub is None:
+                return self._not_found()
+            if sub in ("/", "/index.html"):
+                if not self._authed():
+                    return self._html(200, _LOGIN.replace("__ERR__", ""))
+                return self._html(200, _PAGE)
+            if sub == "/api/status":
+                if not self._authed():
+                    return self._json(401, {"error": "auth required"})
+                return self._json(200, server.snapshot())
+            return self._not_found()
 
         def do_POST(self):  # noqa: N802
-            if self.path != "/api/switch":
-                self._json(404, {"error": "not found"})
+            sub = self._subpath(self.path)
+            if sub is None:
+                return self._not_found()
+
+            if sub == "/login":
+                return self._do_login()
+
+            if sub == "/api/switch":
+                if not self._authed():
+                    return self._json(401, {"error": "auth required"})
+                length = int(self.headers.get("Content-Length", 0) or 0)
+                raw = self.rfile.read(length) if length else b"{}"
+                try:
+                    node_id = (json.loads(raw or b"{}") or {}).get("node_id", "")
+                except json.JSONDecodeError:
+                    return self._json(400, {"error": "invalid JSON"})
+                if not node_id:
+                    return self._json(400, {"error": "node_id required"})
+                return self._json(200, server.switch(node_id))
+
+            return self._not_found()
+
+        def _do_login(self):
+            if not gated:
+                self._send(303, b"", "text/plain", [("Location", "./")])
                 return
             length = int(self.headers.get("Content-Length", 0) or 0)
-            raw = self.rfile.read(length) if length else b"{}"
-            try:
-                node_id = (json.loads(raw or b"{}") or {}).get("node_id", "")
-            except json.JSONDecodeError:
-                self._json(400, {"error": "invalid JSON"})
+            raw = self.rfile.read(length) if length else b""
+            fields = urllib.parse.parse_qs(raw.decode("utf-8", errors="replace"))
+            password = (fields.get("password", [""]) or [""])[0]
+            token = auth.login(password)
+            if token is None:
+                self._html(401, _LOGIN.replace("__ERR__", "Incorrect password"))
                 return
-            if not node_id:
-                self._json(400, {"error": "node_id required"})
-                return
-            self._json(200, server.switch(node_id))
+            # Success: set the session cookie and redirect to the dashboard.
+            self._send(303, b"", "text/plain",
+                       [("Location", prefix + "/"), ("Set-Cookie", auth.cookie_header(token))])
 
     return Handler
