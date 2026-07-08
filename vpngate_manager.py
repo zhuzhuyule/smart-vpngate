@@ -161,6 +161,20 @@ last_checker_heartbeat = 0.0
 last_pinger_heartbeat = 0.0
 server_start_time = time.time()
 
+# 每出口运行时（内存，不落盘的部分）
+exit_runtime: dict[int, dict[str, Any]] = {}
+exit_runtime_lock = threading.Lock()
+
+
+def get_exit_runtime(exit_id: int) -> dict[str, Any]:
+    with exit_runtime_lock:
+        rt = exit_runtime.get(exit_id)
+        if rt is None:
+            rt = {"process": None, "node_id": "", "is_connecting": False,
+                  "lock": threading.RLock(), "latency": 0, "last_ping_time": 0.0}
+            exit_runtime[exit_id] = rt
+        return rt
+
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(exist_ok=True, parents=True)
     CONFIG_DIR.mkdir(exist_ok=True, parents=True)
@@ -402,6 +416,24 @@ def set_state(**updates: Any) -> None:
     state.update(updates)
     write_json(STATE_FILE, state)
 
+def default_exit_state() -> dict[str, Any]:
+    return {"active_node_id": "", "is_connecting": False, "latency": 0,
+            "proxy_ok": False, "proxy_ip": "-", "proxy_latency_ms": 0,
+            "proxy_error": "", "last_message": ""}
+
+
+def set_exit_state(exit_id: int, **updates: Any) -> None:
+    with lock:
+        state = read_json(STATE_FILE, {})
+        exits = state.get("exits")
+        if not isinstance(exits, list):
+            exits = []
+        while len(exits) <= exit_id:
+            exits.append(default_exit_state())
+        exits[exit_id].update(updates)
+        state["exits"] = exits
+        write_json(STATE_FILE, state)
+
 def read_nodes() -> list[dict[str, Any]]:
     raw = read_json(NODES_FILE, [])
     if not isinstance(raw, list):
@@ -427,6 +459,23 @@ def get_state() -> dict[str, Any]:
     
     # Pre-populate settings inputs in UI
     ui_cfg = load_ui_config()
+
+    # 多出口：合成 exits 状态数组（active_node_id 以持久化快照为准，is_connecting 取运行时实时值）
+    ui_cfg_exits = ui_cfg.get("exits", []) if isinstance(ui_cfg.get("exits"), list) else []
+    persisted_exits = state.get("exits", []) if isinstance(state.get("exits"), list) else []
+    merged_exits = []
+    for i in range(len(ui_cfg_exits)):
+        base = persisted_exits[i] if i < len(persisted_exits) and isinstance(persisted_exits[i], dict) else default_exit_state()
+        base = dict(base)
+        rt = get_exit_runtime(i)
+        res = exit_resources(i, ui_cfg.get("tun_prefix", TUN_PREFIX))
+        base["is_connecting"] = rt["is_connecting"]
+        base["proxy_port"] = res["proxy_port"]
+        base["tun_dev"] = res["tun_dev"]
+        base["config"] = ui_cfg_exits[i]
+        merged_exits.append(base)
+    state["exits"] = merged_exits
+
     state["username"] = ui_cfg.get("username", "admin")
     state["port"] = ui_cfg.get("port", 8787)
     state["secret_path"] = ui_cfg.get("secret_path", "EJsW2EeBo9lY")

@@ -115,5 +115,20 @@ class TestLoadConfigExits(unittest.TestCase):
         self.assertEqual(cfg["tun_prefix"], "svtun")
 
 
+class TestExitRuntime(unittest.TestCase):
+    def test_runtime_initialized_per_exit(self):
+        rt = vm.get_exit_runtime(0)
+        self.assertIn("lock", rt)
+        self.assertIsNone(rt["process"])
+        self.assertEqual(rt["node_id"], "")
+
+    def test_set_and_read_exit_state(self):
+        vm.set_exit_state(1, active_node_id="us1", proxy_ok=True, latency=42)
+        st = vm.get_state()
+        self.assertEqual(st["exits"][1]["active_node_id"], "us1")
+        self.assertTrue(st["exits"][1]["proxy_ok"])
+        self.assertEqual(st["exits"][1]["latency"], 42)
+
+
 if __name__ == "__main__":
     unittest.main()
