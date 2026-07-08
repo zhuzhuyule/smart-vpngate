@@ -472,7 +472,7 @@ def get_state() -> dict[str, Any]:
         base["is_connecting"] = rt["is_connecting"]
         base["proxy_port"] = res["proxy_port"]
         base["tun_dev"] = res["tun_dev"]
-        base["config"] = ui_cfg_exits[i]
+        base["config"] = dict(ui_cfg_exits[i])
         merged_exits.append(base)
     state["exits"] = merged_exits
 
