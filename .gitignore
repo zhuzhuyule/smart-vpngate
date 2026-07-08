@@ -58,6 +58,9 @@ AimiliVPN_Analysis_ZH.md
 scratch/
 *连接配置*
 test_*.py
+# 但正式的单元测试目录要纳入版本控制
+!tests/
+!tests/**
 *.bak
 *.orig
 
