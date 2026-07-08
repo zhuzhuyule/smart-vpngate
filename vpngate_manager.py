@@ -1761,79 +1761,77 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
         
     return list(updated_nodes_map.values())
 
-def auto_switch_node(attempt: int = 0) -> None:
+def auto_switch_node(exit_id: int = 0, attempt: int = 0) -> None:
     if attempt >= 3:
-        print("[自动切换] 连续切换失败已达 3 次，停止切换以防止主线程死锁，将在后台重新加载节点...", flush=True)
+        print(f"[自动切换] 出口 {exit_id} 连续切换失败已达 3 次，停止切换以防止死锁，将在后台重新加载节点……", flush=True)
         return
-        
+
     ui_cfg = load_ui_config()
     connection_enabled = ui_cfg.get("connection_enabled", True)
     if not connection_enabled:
         print("[自动切换] 连接已禁用，不进行自动切换。", flush=True)
         return
 
-    routing_mode = ui_cfg.get("routing_mode", "auto")
-    target_country = ui_cfg.get("force_country", "")
-
-    if routing_mode == "fixed_ip":
-        print("[自动切换] 当前处于固定 IP 模式，不进行自动连接或切换。", flush=True)
+    exits = ui_cfg.get("exits", [])
+    if exit_id >= len(exits):
+        print(f"[自动切换] 出口 {exit_id} 不在当前配置中，跳过。", flush=True)
         return
+    exit_cfg = exits[exit_id]
+    target_country = exit_cfg.get("force_country", "")
 
-    # Find the next best available node
+    # 选一个"可用且未被其他出口占用"的最佳节点（排除自己当前节点，便于重选同池）
     with lock:
         nodes = read_nodes()
-        candidates = [
-            n for n in nodes
-            if n.get("probe_status") == "available"
-            and not n.get("active")
-        ]
-        candidates, region_fallback_used = filter_switch_candidates(candidates, ui_cfg)
+        taken = taken_exits_map(nodes)
+        rt = get_exit_runtime(exit_id)
+        taken.pop(str(rt["node_id"]), None)
+        next_node = select_exit_node(nodes, exit_cfg, exit_id, taken)
 
-        candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
-
-    if candidates:
-        next_node = candidates[0]
-        msg = f"当前连接已失效或代理连通性检测失败，正在自动切换至最佳备用节点: {next_node['id']}"
+    if next_node:
+        region_fallback_used = (
+            exit_cfg.get("mode") == "fixed_region"
+            and bool(target_country)
+            and not country_matches(next_node.get("country"), target_country)
+        )
+        msg = f"出口 {exit_id} 当前连接已失效或代理连通性检测失败，正在自动切换至最佳备用节点：{next_node['id']}"
         if region_fallback_used:
             msg = (
-                f"锁定国家【{target_country}】当前没有任何可用节点，已按配置临时切换到其他国家的最佳节点: "
+                f"出口 {exit_id} 锁定国家【{target_country}】当前没有任何可用节点，已按配置临时切换到其他国家的最佳节点："
                 f"{next_node['id']}（该国恢复可用节点后，下次切换将优先回到该国）"
             )
         print(f"[自动切换] {msg}", flush=True)
         log_to_json("INFO", "VPN", msg)
         try:
-            connect_node(next_node["id"])
+            connect_node(next_node["id"], exit_id)
         except Exception as e:
-            err_msg = f"切换到备用节点 {next_node['id']} 失败: {e}，将尝试下一个..."
+            err_msg = f"出口 {exit_id} 切换到备用节点 {next_node['id']} 失败：{e}，将尝试下一个……"
             print(f"[自动切换] {err_msg}", flush=True)
             log_to_json("WARNING", "VPN", err_msg)
-            auto_switch_node(attempt + 1)
+            auto_switch_node(exit_id, attempt + 1)
     else:
-        msg = "没有可用的备选节点，将自动断开并清理当前连接状态，同时在后台异步获取新节点..."
-        if routing_mode == "fixed_region" and target_country:
-            if region_fallback_enabled(ui_cfg):
-                msg = f"没有可用的【{target_country}】备选节点，其他国家也暂无可用兜底节点，已断开连接，将在后台持续尝试获取新节点..."
+        if exit_cfg.get("mode") == "fixed_region" and target_country:
+            if region_fallback_enabled(exit_routing_view(exit_cfg)):
+                msg = f"出口 {exit_id} 没有可用的【{target_country}】备选节点，其他国家也暂无可用兜底节点，已断开连接，将在后台持续尝试获取新节点……"
             else:
-                msg = f"没有可用的【{target_country}】备选节点，已断开连接，将在后台持续尝试获取新节点..."
+                msg = f"出口 {exit_id} 没有可用的【{target_country}】备选节点，已断开连接，将在后台持续尝试获取新节点……"
+        else:
+            msg = f"出口 {exit_id} 没有可用的备选节点，将自动断开并清理当前连接状态，同时在后台异步获取新节点……"
         print(f"[自动切换] {msg}", flush=True)
         log_to_json("WARNING", "VPN", msg)
-        stop_active_openvpn()
-        with lock:
-            nodes = read_nodes()
-            for item in nodes:
-                item["active"] = False
-            write_json(NODES_FILE, nodes)
-        set_state(active_openvpn_node_id="", last_check_message=msg)
-        
+        stop_exit(exit_id)
+        set_exit_state(exit_id, active_node_id="", last_message=msg)
+        if exit_id == 0:
+            set_state(active_openvpn_node_id="", last_check_message=msg)
+
         def bg_fetch_and_switch():
             try:
                 # 避免所有节点不可用时连续拉取/测试导致 CPU 与 tun 网卡风暴。
                 time.sleep(60)
                 maintain_valid_nodes(force=False)
-                auto_switch_node(attempt + 1)
+                auto_switch_node(exit_id, attempt + 1)
             except Exception as e:
-                print(f"[自动切换后台补齐] 获取并测试节点失败: {e}", flush=True)
-        
+                print(f"[自动切换后台补齐] 出口 {exit_id} 获取并测试节点失败：{e}", flush=True)
+
         threading.Thread(target=bg_fetch_and_switch, daemon=True).start()
 
 def connect_node(node_id: str, exit_id: int = 0) -> str:
