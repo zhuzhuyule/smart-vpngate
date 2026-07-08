@@ -1328,6 +1328,34 @@ def filter_switch_candidates(
         return candidates, bool(candidates)
     return candidates, False
 
+def exit_routing_view(exit_cfg: dict[str, Any]) -> dict[str, Any]:
+    """把每出口配置映射成 filter_switch_candidates 认识的 routing 视图。"""
+    return {
+        "routing_mode": "fixed_region" if exit_cfg.get("mode") == "fixed_region" else "auto",
+        "force_country": exit_cfg.get("force_country", ""),
+        "routing_ip_type": exit_cfg.get("routing_ip_type", "all"),
+        "region_fail_fallback": bool(exit_cfg.get("region_fail_fallback", False)),
+    }
+
+def select_exit_node(
+    nodes: list[dict[str, Any]],
+    exit_cfg: dict[str, Any],
+    exit_id: int,
+    taken: dict[str, int],
+) -> dict[str, Any] | None:
+    """为某出口从共享池选一个"可用且未被别的出口占用"的最佳节点。
+    taken: node_id -> 占用它的 exit_id。
+    """
+    free = [
+        n for n in nodes
+        if n.get("probe_status") == "available"
+        and taken.get(str(n.get("id"))) in (None, exit_id)
+    ]
+    view = exit_routing_view(exit_cfg)
+    candidates, _ = filter_switch_candidates(free, view)
+    candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
+    return candidates[0] if candidates else None
+
 def validate_node_allowed_by_routing(node: dict[str, Any], ui_cfg: dict[str, Any]) -> None:
     routing_mode = ui_cfg.get("routing_mode", "auto")
     node_id = str(node.get("id") or "")

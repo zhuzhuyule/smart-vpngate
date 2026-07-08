@@ -56,5 +56,47 @@ class TestConfigMigration(unittest.TestCase):
         self.assertEqual(len(out["exits"]), 3)
 
 
+class TestExitSelection(unittest.TestCase):
+    def _nodes(self):
+        return [
+            {"id": "jp1", "country": "Japan", "probe_status": "available", "ip_type": "residential", "active_exit": None},
+            {"id": "jp2", "country": "Japan", "probe_status": "available", "ip_type": "residential", "active_exit": None},
+            {"id": "us1", "country": "United States", "probe_status": "available", "ip_type": "residential", "active_exit": None},
+        ]
+
+    def test_view_maps_exit_cfg(self):
+        v = vm.exit_routing_view({"mode": "fixed_region", "force_country": "Japan",
+                                  "routing_ip_type": "residential", "region_fail_fallback": True})
+        self.assertEqual(v["routing_mode"], "fixed_region")
+        self.assertEqual(v["force_country"], "Japan")
+        self.assertTrue(v["region_fail_fallback"])
+
+    def test_two_japan_exits_get_different_nodes(self):
+        nodes = self._nodes()
+        cfg = {"mode": "fixed_region", "force_country": "Japan",
+               "routing_ip_type": "all", "region_fail_fallback": False}
+        n0 = vm.select_exit_node(nodes, cfg, exit_id=0, taken={})
+        self.assertEqual(n0["country"], "Japan")
+        n1 = vm.select_exit_node(nodes, cfg, exit_id=1, taken={n0["id"]: 0})
+        self.assertEqual(n1["country"], "Japan")
+        self.assertNotEqual(n1["id"], n0["id"])
+
+    def test_no_free_node_returns_none(self):
+        nodes = self._nodes()
+        cfg = {"mode": "fixed_region", "force_country": "Japan",
+               "routing_ip_type": "all", "region_fail_fallback": False}
+        taken = {"jp1": 0, "jp2": 1}
+        self.assertIsNone(vm.select_exit_node(nodes, cfg, exit_id=2, taken=taken))
+
+    def test_fallback_crosses_country_when_enabled(self):
+        nodes = self._nodes()
+        cfg = {"mode": "fixed_region", "force_country": "Japan",
+               "routing_ip_type": "all", "region_fail_fallback": True}
+        taken = {"jp1": 0, "jp2": 1}
+        picked = vm.select_exit_node(nodes, cfg, exit_id=2, taken=taken)
+        self.assertIsNotNone(picked)
+        self.assertEqual(picked["id"], "us1")
+
+
 if __name__ == "__main__":
     unittest.main()
