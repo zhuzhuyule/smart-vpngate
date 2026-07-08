@@ -1202,21 +1202,21 @@ def run_openvpn_until_ready(config_file: str, keep_alive: bool, route_nopull: bo
     return ok, message, process
 
 
-def setup_policy_routing(interface: str = "tun0") -> None:
+def setup_policy_routing(interface: str = "tun0", table: int = TABLE_BASE) -> None:
     try:
-        subprocess.run(["ip", "rule", "del", "table", "100"], capture_output=True, timeout=2)
+        subprocess.run(["ip", "rule", "del", "table", str(table)], capture_output=True, timeout=2)
     except Exception:
         pass
     try:
-        subprocess.run(["ip", "route", "flush", "table", "100"], capture_output=True, timeout=2)
+        subprocess.run(["ip", "route", "flush", "table", str(table)], capture_output=True, timeout=2)
     except Exception:
         pass
-    
+
     success = False
     for attempt in range(1, 4):
         try:
-            subprocess.run(["ip", "route", "add", "default", "dev", interface, "table", "100"], check=True, timeout=2)
-            subprocess.run(["ip", "rule", "add", "oif", interface, "table", "100"], check=True, timeout=2)
+            subprocess.run(["ip", "route", "add", "default", "dev", interface, "table", str(table)], check=True, timeout=2)
+            subprocess.run(["ip", "rule", "add", "oif", interface, "table", str(table)], check=True, timeout=2)
             # 配置反向路径过滤 rp_filter 为 loose 模式 (2)，防止回包被内核静默丢弃
             for proc_path in ["all", "default", interface]:
                 try:
@@ -1229,16 +1229,16 @@ def setup_policy_routing(interface: str = "tun0") -> None:
         except Exception as e:
             print(f"[policy_routing] Attempt {attempt} failed to enable policy routing: {e}", flush=True)
             time.sleep(1)
-            
-    if not success:
-        print("[路由配置失败] [错误代码 3003] [ERR_ROUTE_TABLE_ADD_FAILED] 策略路由配置失败。原因: 无法向路由表 100 添加默认路由，这可能会导致通过 VPN 接口的出站路由无法正常解析。请检查系统是否支持策略路由、iproute2 工具是否完整，以及是否具有 root 权限。", flush=True)
-        log_to_json("ERROR", "Routing", "[错误代码 3003] [ERR_ROUTE_TABLE_ADD_FAILED] 策略路由配置失败。原因: 无法向路由表 100 添加默认路由")
 
-def cleanup_policy_routing() -> None:
+    if not success:
+        print(f"[路由配置失败] [错误代码 3003] [ERR_ROUTE_TABLE_ADD_FAILED] 策略路由配置失败。原因: 无法向路由表 {table} 添加默认路由，这可能会导致通过 VPN 接口的出站路由无法正常解析。请检查系统是否支持策略路由、iproute2 工具是否完整，以及是否具有 root 权限。", flush=True)
+        log_to_json("ERROR", "Routing", f"[错误代码 3003] [ERR_ROUTE_TABLE_ADD_FAILED] 策略路由配置失败。原因: 无法向路由表 {table} 添加默认路由")
+
+def cleanup_policy_routing(table: int = TABLE_BASE) -> None:
     try:
-        subprocess.run(["ip", "rule", "del", "table", "100"], capture_output=True, timeout=2)
-        subprocess.run(["ip", "route", "flush", "table", "100"], capture_output=True, timeout=2)
-        print("[policy_routing] Cleared policy routing table 100", flush=True)
+        subprocess.run(["ip", "rule", "del", "table", str(table)], capture_output=True, timeout=2)
+        subprocess.run(["ip", "route", "flush", "table", str(table)], capture_output=True, timeout=2)
+        print(f"[policy_routing] Cleared policy routing table {table}", flush=True)
     except Exception:
         pass
 
