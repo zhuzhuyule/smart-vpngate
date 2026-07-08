@@ -98,5 +98,21 @@ class TestExitSelection(unittest.TestCase):
         self.assertEqual(picked["id"], "us1")
 
 
+class TestLoadConfigExits(unittest.TestCase):
+    def setUp(self):
+        import importlib, tempfile
+        os.environ["VPNGATE_DATA_DIR"] = tempfile.mkdtemp(prefix="vgt_cfg_")
+        importlib.reload(vm)
+
+    def test_fresh_load_has_exits(self):
+        cfg = vm.load_ui_config()
+        self.assertIn("exits", cfg)
+        self.assertEqual(len(cfg["exits"]), vm.DEFAULT_EXIT_COUNT)
+
+    def test_tun_prefix_default(self):
+        cfg = vm.load_ui_config()
+        self.assertEqual(cfg.get("tun_prefix", "svtun"), "svtun")
+
+
 if __name__ == "__main__":
     unittest.main()

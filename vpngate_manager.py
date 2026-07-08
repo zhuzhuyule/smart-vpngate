@@ -282,6 +282,8 @@ def load_ui_config() -> dict[str, Any]:
             "favorite_node_ids": [],
             "fav_fail_fallback": False,
             "region_fail_fallback": False,
+            "tun_prefix": TUN_PREFIX,
+            "exits": [],
             "discovery_countries": []
         }
         updated = False
@@ -290,7 +292,7 @@ def load_ui_config() -> dict[str, Any]:
                 data = json.loads(auth_file.read_text(encoding="utf-8"))
                 for key, val in data.items():
                     config[key] = val
-                for key in ["host", "port", "proxy_port", "routing_mode", "force_country", "routing_ip_type", "connection_enabled", "fixed_node_id", "favorite_node_ids", "fav_fail_fallback", "region_fail_fallback", "discovery_countries"]:
+                for key in ["host", "port", "proxy_port", "routing_mode", "force_country", "routing_ip_type", "connection_enabled", "fixed_node_id", "favorite_node_ids", "fav_fail_fallback", "region_fail_fallback", "tun_prefix", "exits", "discovery_countries"]:
                     if key not in data:
                         updated = True
             except Exception:
@@ -318,14 +320,16 @@ def load_ui_config() -> dict[str, Any]:
         if normalized_proxy_port != config.get("proxy_port"):
             config["proxy_port"] = normalized_proxy_port
             updated = True
-            
+
+        config = migrate_legacy_exits(config, slots=DEFAULT_EXIT_COUNT)
+
         if not auth_file.exists() or updated:
             try:
                 DATA_DIR.mkdir(exist_ok=True, parents=True)
                 write_json(auth_file, config)
             except Exception:
                 pass
-                
+
         return config
 
 # 初始化时优先从 ui_auth.json 加载保存的代理出站端口和网页端口配置以覆盖环境变量
