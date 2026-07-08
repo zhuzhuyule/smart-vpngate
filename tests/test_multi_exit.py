@@ -111,7 +111,8 @@ class TestLoadConfigExits(unittest.TestCase):
 
     def test_tun_prefix_default(self):
         cfg = vm.load_ui_config()
-        self.assertEqual(cfg.get("tun_prefix", "svtun"), "svtun")
+        self.assertIn("tun_prefix", cfg)
+        self.assertEqual(cfg["tun_prefix"], "svtun")
 
 
 if __name__ == "__main__":
