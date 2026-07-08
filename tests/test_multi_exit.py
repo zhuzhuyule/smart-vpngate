@@ -130,5 +130,33 @@ class TestExitRuntime(unittest.TestCase):
         self.assertEqual(st["exits"][1]["latency"], 42)
 
 
+class TestActiveExitMutex(unittest.TestCase):
+    def test_taken_map_from_nodes(self):
+        nodes = [
+            {"id": "a", "active_exit": 0},
+            {"id": "b", "active_exit": None},
+            {"id": "c", "active_exit": 2},
+        ]
+        self.assertEqual(vm.taken_exits_map(nodes), {"a": 0, "c": 2})
+
+    def test_legacy_active_bool_maps_to_exit0(self):
+        nodes = [{"id": "a", "active": True}, {"id": "b", "active": False}]
+        self.assertEqual(vm.taken_exits_map(nodes).get("a"), 0)
+
+    def test_bool_active_exit_is_ignored(self):
+        # active_exit 不应被误当作 int(bool 是 int 子类)
+        nodes = [{"id": "a", "active_exit": True}]
+        self.assertEqual(vm.taken_exits_map(nodes), {})
+
+    def test_accessor_mirrors_exit0_to_globals(self):
+        vm.set_exit_node_id(0, "n0")
+        self.assertEqual(vm.active_openvpn_node_id, "n0")
+        vm.set_exit_node_id(0, "")
+        # 非 0 出口不镜像全局
+        vm.set_exit_node_id(1, "n1")
+        self.assertEqual(vm.get_exit_runtime(1)["node_id"], "n1")
+        self.assertEqual(vm.active_openvpn_node_id, "")
+
+
 if __name__ == "__main__":
     unittest.main()

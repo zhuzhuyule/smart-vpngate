@@ -175,6 +175,39 @@ def get_exit_runtime(exit_id: int) -> dict[str, Any]:
             exit_runtime[exit_id] = rt
         return rt
 
+
+def set_exit_process(exit_id: int, proc: subprocess.Popen[str] | None) -> None:
+    global active_openvpn_process
+    get_exit_runtime(exit_id)["process"] = proc
+    if exit_id == 0:  # 过渡期镜像：尚未改造的旧读者仍读全局
+        active_openvpn_process = proc
+
+
+def set_exit_node_id(exit_id: int, node_id: str) -> None:
+    global active_openvpn_node_id
+    get_exit_runtime(exit_id)["node_id"] = node_id
+    if exit_id == 0:
+        active_openvpn_node_id = node_id
+
+
+def set_exit_connecting(exit_id: int, value: bool) -> None:
+    global is_connecting
+    get_exit_runtime(exit_id)["is_connecting"] = value
+    if exit_id == 0:
+        is_connecting = value
+
+
+def get_exit_connecting(exit_id: int) -> bool:
+    if exit_id == 0:
+        return is_connecting  # 过渡期：exit 0 沿用全局标志
+    return get_exit_runtime(exit_id)["is_connecting"]
+
+
+def exit_process_running(exit_id: int) -> bool:
+    proc = get_exit_runtime(exit_id)["process"]
+    return proc is not None and proc.poll() is None
+
+
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(exist_ok=True, parents=True)
     CONFIG_DIR.mkdir(exist_ok=True, parents=True)
@@ -1242,22 +1275,24 @@ def cleanup_policy_routing(table: int = TABLE_BASE) -> None:
     except Exception:
         pass
 
-def stop_active_openvpn() -> None:
-    global active_openvpn_process, active_openvpn_node_id
+def stop_exit(exit_id: int = 0) -> None:
+    rt = get_exit_runtime(exit_id)
+    res = exit_resources(exit_id, load_ui_config().get("tun_prefix", TUN_PREFIX))
     with lock:
-        cleanup_policy_routing()
+        cleanup_policy_routing(res["route_table"])
         config_to_delete = None
-        if active_openvpn_node_id:
+        node_id = rt["node_id"]
+        if node_id:
             nodes = read_nodes()
-            node = next((item for item in nodes if item.get("id") == active_openvpn_node_id), None)
+            node = next((item for item in nodes if item.get("id") == node_id), None)
             if node:
                 config_to_delete = node.get("config_file")
-                
-        stop_process(active_openvpn_process)
-        active_openvpn_process = None
-        active_openvpn_node_id = ""
-        kill_existing_openvpn_processes()
-        
+        stop_process(rt["process"])
+        set_exit_process(exit_id, None)
+        set_exit_node_id(exit_id, "")
+        if node_id:
+            set_node_active_exit(node_id, None)
+        # 注意：不再无差别 kill_existing_openvpn_processes()——那会杀掉其他出口的隧道。
         if config_to_delete:
             try:
                 path = Path(config_to_delete)
@@ -1265,6 +1300,10 @@ def stop_active_openvpn() -> None:
                     path.unlink()
             except Exception:
                 pass
+
+
+def stop_active_openvpn() -> None:
+    stop_exit(0)
 
 def active_openvpn_running() -> bool:
     return active_openvpn_process is not None and active_openvpn_process.poll() is None
@@ -1408,6 +1447,31 @@ def select_exit_node(
     candidates, _ = filter_switch_candidates(free, view)
     candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
     return candidates[0] if candidates else None
+
+
+def taken_exits_map(nodes: list[dict[str, Any]]) -> dict[str, int]:
+    """从节点列表构造 node_id -> 占用它的 exit_id 映射。兼容旧 active 布尔（视为 exit 0）。"""
+    taken: dict[str, int] = {}
+    for n in nodes:
+        nid = str(n.get("id") or "")
+        if not nid:
+            continue
+        ae = n.get("active_exit")
+        if isinstance(ae, int) and not isinstance(ae, bool):
+            taken[nid] = ae
+        elif ae is None and n.get("active"):
+            taken[nid] = 0
+    return taken
+
+
+def set_node_active_exit(node_id: str, exit_id: int | None) -> None:
+    with lock:
+        nodes = read_nodes()
+        for n in nodes:
+            if str(n.get("id")) == str(node_id):
+                n["active_exit"] = exit_id
+                n["active"] = exit_id is not None  # 兼容仍读 active 的旧 UI/逻辑
+        write_json(NODES_FILE, nodes)
 
 def validate_node_allowed_by_routing(node: dict[str, Any], ui_cfg: dict[str, Any]) -> None:
     routing_mode = ui_cfg.get("routing_mode", "auto")
@@ -1772,42 +1836,38 @@ def auto_switch_node(attempt: int = 0) -> None:
         
         threading.Thread(target=bg_fetch_and_switch, daemon=True).start()
 
-def connect_node(node_id: str) -> str:
-    global active_openvpn_process, active_openvpn_node_id, is_connecting
+def connect_node(node_id: str, exit_id: int = 0) -> str:
     node_id = str(node_id or "").strip()
     if not node_id:
         raise ValueError("Node id is required")
+    res = exit_resources(exit_id, load_ui_config().get("tun_prefix", TUN_PREFIX))
+    tun_dev = res["tun_dev"]
     stopped_existing = False
     with lock:
-        if is_connecting:
-            print("[连接] 正在建立其他连接中，跳过此请求", flush=True)
+        if get_exit_connecting(exit_id):
+            print(f"[连接] 出口 {exit_id} 正在建立其他连接中，跳过此请求", flush=True)
             raise RuntimeError("当前已有连接或节点检测任务正在运行，请稍后再试")
-        is_connecting = True
-        set_state(is_connecting=True, active_node_latency="正在连接", last_check_message=f"正在初始化连接配置: {node_id}")
-        
+        set_exit_connecting(exit_id, True)
+        set_exit_state(exit_id, is_connecting=True, last_message=f"正在初始化连接配置: {node_id}")
+        if exit_id == 0:
+            set_state(is_connecting=True, active_node_latency="正在连接", last_check_message=f"正在初始化连接配置: {node_id}")
+
     try:
-        log_to_json("INFO", "VPN", f"开始连接节点: {node_id}")
+        log_to_json("INFO", "VPN", f"出口 {exit_id} 开始连接节点: {node_id}")
 
         nodes = read_nodes()
         node = next((item for item in nodes if item.get("id") == node_id), None)
         if not node:
             raise ValueError(f"Node not found: {node_id}")
-        
+
         ui_cfg = load_ui_config()
         validate_node_allowed_by_routing(node, ui_cfg)
-        ui_cfg["connection_enabled"] = True
-        if ui_cfg.get("routing_mode") == "fixed_ip":
-            ui_cfg["fixed_node_id"] = node_id
-        auth_file = DATA_DIR / "ui_auth.json"
-        with lock:
-            DATA_DIR.mkdir(exist_ok=True, parents=True)
-            write_json(auth_file, ui_cfg)
-        
-        set_state(active_node_latency="清理连接", last_check_message="正在关闭与清理旧的 VPN 连接及网卡...")
-        stop_active_openvpn()
+
+        set_exit_state(exit_id, last_message="正在关闭与清理旧的 VPN 连接及网卡...")
+        stop_exit(exit_id)
         stopped_existing = True
 
-        set_state(active_node_latency="写入配置", last_check_message="正在写入 OpenVPN 节点配置文件...")
+        set_exit_state(exit_id, last_message="正在写入 OpenVPN 节点配置文件...")
         config_path = Path(node["config_file"])
         try:
             CONFIG_DIR.mkdir(exist_ok=True, parents=True)
@@ -1815,8 +1875,8 @@ def connect_node(node_id: str) -> str:
         except Exception as e:
             raise RuntimeError(f"Failed to write configuration: {e}")
 
-        set_state(active_node_latency="启动核心", last_check_message="正在启动 OpenVPN Core 核心服务并建立连接...")
-        ok, message, process = run_openvpn_until_ready(str(node["config_file"]), keep_alive=True, route_nopull=True)
+        set_exit_state(exit_id, last_message="正在启动 OpenVPN Core 核心服务并建立连接...")
+        ok, message, process = run_openvpn_until_ready(str(node["config_file"]), keep_alive=True, route_nopull=True, dev=tun_dev)
         if not ok or process is None:
             try:
                 if config_path.exists():
@@ -1825,75 +1885,65 @@ def connect_node(node_id: str) -> str:
                 pass
             node["probe_status"] = "unavailable"
             node["probe_message"] = message
-            for item in nodes:
-                item["active"] = False
             write_json(NODES_FILE, nodes)
-            log_to_json("ERROR", "VPN", f"连接节点 {node_id} 失败: {message}")
-            print(f"[连接核心失败] 无法与 VPN 节点 {node_id} 建立隧道连接！详情: {message}", flush=True)
-            set_state(active_openvpn_node_id="", is_connecting=False, active_node_latency="无活动连接", last_check_message=f"连接失败: {message}")
-            with lock:
-                active_openvpn_node_id = ""
+            log_to_json("ERROR", "VPN", f"出口 {exit_id} 连接节点 {node_id} 失败: {message}")
+            print(f"[连接核心失败] 出口 {exit_id} 无法与 VPN 节点 {node_id} 建立隧道连接！详情: {message}", flush=True)
+            set_exit_state(exit_id, active_node_id="", is_connecting=False, last_message=f"连接失败: {message}")
+            set_exit_node_id(exit_id, "")
             raise RuntimeError(message)
-            
-        with lock:
-            active_openvpn_process = process
-            active_openvpn_node_id = node_id
-        
-        set_state(active_node_latency="配置路由", last_check_message="正在配置策略路由规则与流量转发...")
-        setup_policy_routing("tun0")
-        
-        global last_active_ping_time, last_active_latency
-        last_active_ping_time = time.time()
-        last_active_latency = 0
-        
-        set_state(active_node_latency="测试延迟", last_check_message="正在直连测试代理出口延迟与可用性...")
+
+        set_exit_process(exit_id, process)
+        set_exit_node_id(exit_id, node_id)
+
+        set_exit_state(exit_id, last_message="正在配置策略路由规则与流量转发...")
+        setup_policy_routing(tun_dev, res["route_table"])
+
+        rt = get_exit_runtime(exit_id)
+        rt["last_ping_time"] = time.time()
+        rt["latency"] = 0
+
+        set_exit_state(exit_id, last_message="正在直连测试代理出口延迟与可用性...")
         try:
             ip = node.get("ip") or node.get("remote_host")
             port = parse_int(node.get("remote_port"))
             fallback = parse_int(node.get("ping"))
             latency = vpn_utils.ping_latency_ms(ip, port, fallback)
             if latency > 0:
-                last_active_latency = latency
+                rt["latency"] = latency
         except Exception:
             pass
-            
-        for item in nodes:
-            item["active"] = item.get("id") == node_id
-            if item["active"]:
-                _ph = f"[{LOCAL_PROXY_HOST}]" if ":" in LOCAL_PROXY_HOST else LOCAL_PROXY_HOST
-                item["probe_message"] = f"Active node. HTTP proxy: http://{_ph}:{LOCAL_PROXY_PORT}"
-        write_json(NODES_FILE, nodes)
-        
-        set_state(last_check_message="正在测试本地代理出站联通性与出口 IP...")
-        res = check_proxy_health()
-        if res["ok"]:
-            set_state(
-                proxy_ok=True,
-                proxy_ip=res["ip"],
-                proxy_latency_ms=res["latency_ms"],
-                proxy_error=""
-            )
+
+        set_node_active_exit(node_id, exit_id)
+
+        set_exit_state(exit_id, last_message="正在测试本地代理出站联通性与出口 IP...")
+        health = check_proxy_health(exit_id)
+        if health["ok"]:
+            set_exit_state(exit_id, proxy_ok=True, proxy_ip=health["ip"], proxy_latency_ms=health["latency_ms"], proxy_error="")
         else:
-            set_state(
-                proxy_ok=False,
-                proxy_ip="-",
-                proxy_latency_ms=0,
-                proxy_error=res.get("error", "未知错误")
-            )
-            
-        latency_str = f"{last_active_latency} ms" if last_active_latency > 0 else "检测超时"
-        set_state(active_openvpn_node_id=node_id, is_connecting=False, last_check_message=f"Connected {node_id}", active_node_latency=latency_str)
-        log_to_json("INFO", "VPN", f"节点 {node_id} 连接成功，出口网卡 tun0 已启用")
+            set_exit_state(exit_id, proxy_ok=False, proxy_ip="-", proxy_latency_ms=0, proxy_error=health.get("error", "未知错误"))
+
+        latency_str = f"{rt['latency']} ms" if rt["latency"] > 0 else "检测超时"
+        set_exit_state(exit_id, active_node_id=node_id, is_connecting=False, latency=rt["latency"], last_message=f"Connected {node_id}")
+        if exit_id == 0:
+            set_state(active_openvpn_node_id=node_id, is_connecting=False, last_check_message=f"Connected {node_id}", active_node_latency=latency_str,
+                      proxy_ok=health.get("ok", False), proxy_ip=health.get("ip", "-") if health.get("ok") else "-",
+                      proxy_latency_ms=health.get("latency_ms", 0) if health.get("ok") else 0, proxy_error="" if health.get("ok") else health.get("error", ""))
+        log_to_json("INFO", "VPN", f"出口 {exit_id} 节点 {node_id} 连接成功，出口网卡 {tun_dev} 已启用")
         return f"Connected {node_id}"
     except Exception as exc:
-        if stopped_existing or (active_openvpn_node_id == node_id and not active_openvpn_running()):
-            clear_active_connection_state(f"连接失败: {exc}")
+        if stopped_existing or (get_exit_runtime(exit_id)["node_id"] == node_id and not exit_process_running(exit_id)):
+            stop_exit(exit_id)
+            set_exit_state(exit_id, active_node_id="", is_connecting=False, latency=0, last_message=f"连接失败: {exc}")
+            if exit_id == 0:
+                clear_active_connection_state(f"连接失败: {exc}")
         else:
-            set_state(is_connecting=False, last_check_message=f"连接失败: {exc}")
+            set_exit_state(exit_id, is_connecting=False, last_message=f"连接失败: {exc}")
+            if exit_id == 0:
+                set_state(is_connecting=False, last_check_message=f"连接失败: {exc}")
         raise
     finally:
         with lock:
-            is_connecting = False
+            set_exit_connecting(exit_id, False)
 
 def maintain_valid_nodes(force: bool = False, target_countries: list[str] | None = None) -> str:
     global active_openvpn_process, active_openvpn_node_id, is_connecting
@@ -5222,7 +5272,10 @@ function exportLogContent() {
 </script>
 </body></html>"""
 
-def check_proxy_health() -> dict[str, Any]:
+def check_proxy_health(exit_id: int = 0) -> dict[str, Any]:
+    res = exit_resources(exit_id, load_ui_config().get("tun_prefix", TUN_PREFIX))
+    proxy_port = res["proxy_port"]
+    tun_dev = res["tun_dev"]
     # 1. 检测代理服务端口是否在监听
     is_ipv6 = ":" in LOCAL_PROXY_HOST
     af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
@@ -5234,18 +5287,18 @@ def check_proxy_health() -> dict[str, Any]:
         if connect_host in ("::", "0.0.0.0", ""):
             connect_host = "::1" if is_ipv6 else "127.0.0.1"
         try:
-            s.connect((connect_host, LOCAL_PROXY_PORT))
+            s.connect((connect_host, proxy_port))
         except Exception as e:
             if connect_host == "::1":
                 s.close()
                 s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 s.settimeout(1.5)
-                s.connect(("127.0.0.1", LOCAL_PROXY_PORT))
+                s.connect(("127.0.0.1", proxy_port))
             else:
                 raise e
     except Exception as e:
-        diag = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT, host=LOCAL_PROXY_HOST)
-        diag_msg = diag[1] if diag else f"端口 {LOCAL_PROXY_PORT} 连接失败，原因: {e}"
+        diag = vpn_utils.diagnose_local_obstructions(proxy_port, host=LOCAL_PROXY_HOST)
+        diag_msg = diag[1] if diag else f"端口 {proxy_port} 连接失败，原因: {e}"
         return {
             "ok": False,
             "error": f"代理服务未运行 ({diag_msg})"
@@ -5257,12 +5310,12 @@ def check_proxy_health() -> dict[str, Any]:
             except Exception:
                 pass
 
-    # 2. 检测虚拟网卡 tun0 是否存在 (Linux 下)
-    tun_path = Path("/sys/class/net/tun0")
+    # 2. 检测虚拟网卡是否存在 (Linux 下)
+    tun_path = Path(f"/sys/class/net/{tun_dev}")
     if sys.platform.startswith("linux") and not tun_path.exists():
         return {
             "ok": False,
-            "error": "[错误代码 3004] [ERR_ROUTE_DEV_NOT_FOUND] VPN 虚拟网卡 (tun0) 未启用，请确保当前已成功连接 VPN 节点"
+            "error": f"[错误代码 3004] [ERR_ROUTE_DEV_NOT_FOUND] VPN 虚拟网卡 ({tun_dev}) 未启用，请确保当前已成功连接 VPN 节点"
         }
 
     # 3. 使用 curl 通过本地 SOCKS5 代理接口测试 IP 与实际延迟
@@ -5278,7 +5331,7 @@ def check_proxy_health() -> dict[str, Any]:
             proxy_hosts = [LOCAL_PROXY_HOST]
 
         for p_host in proxy_hosts:
-            proxy_url = f"socks5h://{p_host}:{LOCAL_PROXY_PORT}"
+            proxy_url = f"socks5h://{p_host}:{proxy_port}"
             proxy_user, proxy_pass = proxy_server.get_proxy_credentials()
             cmd = [
                 "curl", "-s",
@@ -5323,14 +5376,14 @@ def check_proxy_health() -> dict[str, Any]:
             if connect_host in ("::", "0.0.0.0", ""):
                 connect_host = "::1" if is_ipv6 else "127.0.0.1"
             try:
-                test_sock.connect((connect_host, LOCAL_PROXY_PORT))
+                test_sock.connect((connect_host, proxy_port))
                 port_still_listening = True
             except Exception:
                 if connect_host == "::1":
                     test_sock.close()
                     test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     test_sock.settimeout(1.0)
-                    test_sock.connect(("127.0.0.1", LOCAL_PROXY_PORT))
+                    test_sock.connect(("127.0.0.1", proxy_port))
                     port_still_listening = True
         except Exception:
             pass
@@ -5342,7 +5395,7 @@ def check_proxy_health() -> dict[str, Any]:
                     pass
 
         if not port_still_listening:
-            diag = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT, host=LOCAL_PROXY_HOST)
+            diag = vpn_utils.diagnose_local_obstructions(proxy_port, host=LOCAL_PROXY_HOST)
             if diag:
                 return {"ok": False, "error": f"出口连接测试失败 | 本机诊断结果: {diag[1]}"}
             
