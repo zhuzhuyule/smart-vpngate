@@ -61,6 +61,8 @@ test_*.py
 # 但正式的单元测试目录要纳入版本控制
 !tests/
 !tests/**
+# 例外不应放行 tests/ 下的缓存目录
+tests/**/__pycache__/
 *.bak
 *.orig
 
