@@ -1943,8 +1943,22 @@ def connect_node(node_id: str, exit_id: int = 0) -> str:
         with lock:
             set_exit_connecting(exit_id, False)
 
+def union_country_candidates(nodes: list[dict[str, Any]], ui_cfg: dict[str, Any]) -> list[dict[str, Any]]:
+    """所有出口锁定国家（及 auto 出口）的候选并集，去重。用于快速首连时保证每个出口的目标国家都有节点被测。"""
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for ex in ui_cfg.get("exits", []):
+        cands, _ = filter_switch_candidates(nodes, exit_routing_view(ex), include_unknown_ip_type=True)
+        for n in cands:
+            nid = str(n.get("id"))
+            if nid not in seen:
+                seen.add(nid)
+                out.append(n)
+    return out
+
+
 def maintain_valid_nodes(force: bool = False, target_countries: list[str] | None = None) -> str:
-    global active_openvpn_process, active_openvpn_node_id, is_connecting
+    global is_connecting
     ensure_dirs()
     if target_countries is None:
         # 未显式传入时，沿用用户上次保存的国家范围偏好（供后台周期任务复用）
@@ -1962,30 +1976,13 @@ def maintain_valid_nodes(force: bool = False, target_countries: list[str] | None
         is_connecting = True
     try:
         if force:
-            with lock:
-                stop_active_openvpn()
-            reconnect_fixed_node_if_needed(load_ui_config())
-        elif not active_openvpn_running():
-            ui_cfg = load_ui_config()
-            routing_mode = ui_cfg.get("routing_mode", "auto")
-            connection_enabled = ui_cfg.get("connection_enabled", True)
-            if connection_enabled:
-                if routing_mode == "fixed_ip":
-                    reconnect_fixed_node_if_needed(ui_cfg)
-                else:
-                    has_active_id = False
-                    with lock:
-                        if active_openvpn_node_id:
-                            has_active_id = True
-                            stop_active_openvpn()
-                    if has_active_id:
-                        print("[维护线程] 检测到当前 OpenVPN 进程已意外退出，准备自动切换节点", flush=True)
-                        is_connecting = False
-                        auto_switch_node()
-                        is_connecting = True
+            # 强制刷新：停掉所有出口，稍后逐出口重连
+            for eid in range(len(load_ui_config().get("exits", []))):
+                with lock:
+                    stop_exit(eid)
 
         try:
-            set_state(is_connecting=True, last_check_message="正在拉取最新的免费 VPN 节点列表...")
+            set_state(is_connecting=True, last_check_message="正在拉取最新的免费 VPN 节点列表……")
             candidates = fetch_candidates(target_countries=target_countries)
         except Exception as exc:
             vpn_utils.check_and_fix_dns()
@@ -1999,48 +1996,34 @@ def maintain_valid_nodes(force: bool = False, target_countries: list[str] | None
         if not candidates:
             return "没有拉取到新节点"
 
+        # 合并：保留所有被任一出口占用的节点及其探测字段，再并入新候选
         with lock:
             current_nodes = read_nodes()
-            current_by_id = {
-                str(n.get("id")): n
-                for n in current_nodes
-                if n.get("id")
-            }
-            active_node = None
-            if active_openvpn_node_id:
-                active_node = next((n for n in current_nodes if n.get("id") == active_openvpn_node_id), None)
-                
+            current_by_id = {str(n.get("id")): n for n in current_nodes if n.get("id")}
+            occupied_ids = set(taken_exits_map(current_nodes).keys())
+
             merged: list[dict[str, Any]] = []
             seen_ids: set[str] = set()
-            
-            if active_node:
-                merged.append(active_node)
-                seen_ids.add(active_node["id"])
-                
+            for nid in occupied_ids:
+                node = current_by_id.get(nid)
+                if node and nid not in seen_ids:
+                    merged.append(node)
+                    seen_ids.add(nid)
+
             for cand in candidates:
                 if cand["id"] not in seen_ids:
                     previous = current_by_id.get(str(cand["id"]))
                     if previous:
-                        for key in [
-                            "probe_status",
-                            "probe_message",
-                            "latency_ms",
-                            "probed_at",
-                            "owner",
-                            "asn",
-                            "as_name",
-                            "location",
-                            "ip_type",
-                            "quality",
-                        ]:
+                        for key in ["probe_status", "probe_message", "latency_ms", "probed_at",
+                                    "owner", "asn", "as_name", "location", "ip_type", "quality"]:
                             if previous.get(key) not in (None, ""):
                                 cand[key] = previous.get(key)
                     merged.append(cand)
                     seen_ids.add(cand["id"])
-                    
+
             if len(merged) > 1000:
                 merged = merged[:1000]
-                
+
             for n in merged:
                 config_path = Path(n["config_file"])
                 if not config_path.exists():
@@ -2048,122 +2031,71 @@ def maintain_valid_nodes(force: bool = False, target_countries: list[str] | None
                         config_path.write_text(n["config_text"], encoding="utf-8")
                     except Exception:
                         pass
-                        
             write_json(NODES_FILE, merged)
 
-        initial_tested_ids: set[str] = set()
         ui_cfg = load_ui_config()
-        should_fast_connect = (
-            ui_cfg.get("connection_enabled", True)
-            and ui_cfg.get("routing_mode", "auto") != "fixed_ip"
-            and not active_openvpn_running()
-        )
-        if should_fast_connect:
+        connection_enabled = ui_cfg.get("connection_enabled", True)
+        exits = ui_cfg.get("exits", [])
+
+        # 快速首连：测试所有出口锁定国家的并集，随后逐出口连接
+        initial_tested_ids: set[str] = set()
+        if connection_enabled:
             with lock:
                 current_nodes = read_nodes()
-                fast_candidates = [
-                    n for n in current_nodes
-                    if not n.get("active") and n.get("probe_status") != "unavailable"
-                ]
-                fast_candidates, _ = filter_switch_candidates(fast_candidates, ui_cfg, include_unknown_ip_type=True)
-                fast_candidates.sort(key=probe_priority_key)
-                fast_test_ids = [
-                    n["id"] for n in fast_candidates
-                    if n.get("id")
-                ][:INITIAL_CONNECT_TEST_LIMIT]
-
+                taken = taken_exits_map(current_nodes)
+                fast_pool = [n for n in current_nodes
+                             if str(n.get("id")) not in taken and n.get("probe_status") != "unavailable"]
+                fast_pool = union_country_candidates(fast_pool, ui_cfg)
+                fast_pool.sort(key=probe_priority_key)
+                fast_test_ids = [n["id"] for n in fast_pool if n.get("id")][:INITIAL_CONNECT_TEST_LIMIT]
             if fast_test_ids:
                 initial_tested_ids = set(fast_test_ids)
-                msg = f"首次快速连接模式：优先测试 {len(fast_test_ids)} 个高优先级节点，发现可用节点后立即连接"
+                msg = f"首次快速连接模式：优先测试 {len(fast_test_ids)} 个高优先级节点，随后为各出口建立连接"
                 print(f"[快速首连] {msg}", flush=True)
                 log_to_json("INFO", "Main", msg)
                 set_state(is_connecting=True, last_check_message=msg)
                 test_multiple_nodes(fast_test_ids)
+                is_connecting = False  # 释放维护守卫，允许各出口 connect（exit 0 经全局镜像）
+                for eid in range(len(exits)):
+                    if not exit_process_running(eid):
+                        auto_switch_node(eid)
+                is_connecting = True
 
-                with lock:
-                    fast_nodes = read_nodes()
-                    available_candidates = [
-                        n for n in fast_nodes
-                        if n.get("probe_status") == "available" and not n.get("active")
-                    ]
-                    available_candidates, _ = filter_switch_candidates(available_candidates, ui_cfg)
-
-                if available_candidates:
-                    is_connecting = False
-                    set_state(is_connecting=False, last_check_message="快速首连已找到可用节点，正在建立连接...")
-                    auto_switch_node()
-                    if active_openvpn_running():
-                        valid_nodes_count = len([n for n in read_nodes() if n.get("probe_status") == "available"])
-                        message = f"Fetched {len(candidates)} nodes. Fast-tested {len(fast_test_ids)} nodes and connected."
-                        set_state(
-                            last_check_at=time.time(),
-                            last_check_message=message,
-                            active_openvpn_node_id=active_openvpn_node_id,
-                            valid_nodes=valid_nodes_count,
-                        )
-                        return message
-                    is_connecting = True
-
-        # Test remaining non-active nodes from the list
+        # 测试其余未被占用的节点，补全节点表
         with lock:
             current_nodes = read_nodes()
-            to_test = [
-                n for n in current_nodes
-                if not n.get("active") and n.get("id") not in initial_tested_ids
-            ]
-            to_test_ids = [n["id"] for n in to_test]
-            
+            taken = taken_exits_map(current_nodes)
+            to_test_ids = [n["id"] for n in current_nodes
+                           if str(n.get("id")) not in taken and n.get("id") not in initial_tested_ids]
+
         msg = f"开始对列表中所有候选节点进行周期连通性与延迟测试，待检测节点共 {len(to_test_ids)} 个"
         print(f"[周期检测] {msg}", flush=True)
         log_to_json("INFO", "Main", msg)
-        
-        set_state(is_connecting=True, last_check_message="正在并发检测所有节点可用性...")
+        set_state(is_connecting=True, last_check_message="正在并发检测所有节点可用性……")
         test_multiple_nodes(to_test_ids)
         is_connecting = False
-        
+
         with lock:
             merged = read_nodes()
-            
-            # Identify available, unavailable, and active nodes
             available_nodes = [n["id"] for n in merged if n.get("probe_status") == "available"]
             unavailable_nodes = [n["id"] for n in merged if n.get("probe_status") == "unavailable"]
-            active_node = next((n["id"] for n in merged if n.get("active")), "无")
-            
             status_report = (
-                f"周期节点检测完成。实时同步状态: 获取到候选节点共 {len(merged)} 个。 "
-                f"其中【可用节点】{len(available_nodes)} 个: {available_nodes[:15]}...; "
-                f"【不可用节点】{len(unavailable_nodes)} 个; "
-                f"当前【正在正常运行的活动连接节点】为: {active_node}。"
+                f"周期节点检测完成。实时同步状态：获取到候选节点共 {len(merged)} 个。 "
+                f"其中【可用节点】{len(available_nodes)} 个：{available_nodes[:15]}……; "
+                f"【不可用节点】{len(unavailable_nodes)} 个。"
             )
             print(f"[周期检测] {status_report}", flush=True)
             log_to_json("INFO", "Main", status_report)
-            
-            if active_node != "无" and not active_openvpn_running():
-                warn_msg = f"[诊断警告] 活动节点 {active_node} 被标记为活动状态，但 OpenVPN 进程实际并未正常运行！"
-                print(warn_msg, flush=True)
-                log_to_json("WARNING", "Main", warn_msg)
-            
-            if not active_openvpn_running():
-                ui_cfg = load_ui_config()
-                connection_enabled = ui_cfg.get("connection_enabled", True)
-                if connection_enabled:
-                    routing_mode = ui_cfg.get("routing_mode", "auto")
-                    
-                    if routing_mode != "fixed_ip":
-                        available_candidates = [n for n in merged if n.get("probe_status") == "available"]
-                        available_candidates, _ = filter_switch_candidates(available_candidates, ui_cfg)
 
-                        if available_candidates:
-                            auto_switch_node()
+        # 为每个仍未连接的出口补齐连接（共享池、按 active_exit 互斥）
+        if connection_enabled:
+            for eid in range(len(exits)):
+                if not exit_process_running(eid):
+                    auto_switch_node(eid)
 
-        valid_nodes_count = len([n for n in merged if n.get("probe_status") == "available"])
+        valid_nodes_count = len([n for n in read_nodes() if n.get("probe_status") == "available"])
         message = f"Fetched {len(candidates)} nodes. Tested {len(to_test_ids)} non-active nodes."
-        set_state(
-            last_check_at=time.time(),
-            last_check_message=message,
-            active_openvpn_node_id=active_openvpn_node_id,
-            valid_nodes=valid_nodes_count,
-        )
+        set_state(last_check_at=time.time(), last_check_message=message, valid_nodes=valid_nodes_count)
         return message
     except Exception as e:
         raise e

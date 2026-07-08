@@ -158,5 +158,25 @@ class TestActiveExitMutex(unittest.TestCase):
         self.assertEqual(vm.active_openvpn_node_id, "")
 
 
+class TestUnionCountryCandidates(unittest.TestCase):
+    def test_union_covers_all_exit_countries_deduped(self):
+        nodes = [
+            {"id": "jp1", "country": "Japan", "probe_status": "available", "ip_type": "residential"},
+            {"id": "us1", "country": "United States", "probe_status": "available", "ip_type": "residential"},
+            {"id": "kr1", "country": "Korea Republic of", "probe_status": "available", "ip_type": "residential"},
+        ]
+        ui_cfg = {"exits": [
+            {"mode": "fixed_region", "force_country": "Japan", "routing_ip_type": "all", "region_fail_fallback": False},
+            {"mode": "fixed_region", "force_country": "United States", "routing_ip_type": "all", "region_fail_fallback": False},
+            {"mode": "auto", "force_country": "", "routing_ip_type": "all", "region_fail_fallback": False},
+        ]}
+        out = vm.union_country_candidates(nodes, ui_cfg)
+        self.assertEqual({n["id"] for n in out}, {"jp1", "us1", "kr1"})
+        self.assertEqual(len(out), 3)  # 去重：exit2 的 auto 命中全部，但并集不重复
+
+    def test_union_empty_exits(self):
+        self.assertEqual(vm.union_country_candidates([{"id": "a", "probe_status": "available"}], {"exits": []}), [])
+
+
 if __name__ == "__main__":
     unittest.main()
