@@ -117,6 +117,23 @@ OPENVPN_AUTH_USER = os.environ.get("OPENVPN_AUTH_USER", "vpn")
 OPENVPN_AUTH_PASS = os.environ.get("OPENVPN_AUTH_PASS", "vpn")
 LOCAL_PROXY_HOST = os.environ.get("LOCAL_PROXY_HOST", "127.0.0.1")
 LOCAL_PROXY_PORT = env_int("LOCAL_PROXY_PORT", 7928, 1, 65535)
+
+TUN_PREFIX = os.environ.get("TUN_PREFIX", "svtun")   # 出口设备名前缀,避免与用户自有 tun0 冲突
+TEST_TUN_PREFIX = "svtst"                             # 测试隧道前缀,与出口设备零重叠
+TABLE_BASE = 100                                      # 出口路由表基号:exit_id -> 100 + id
+BASE_PROXY_PORT = LOCAL_PROXY_PORT                    # 出口代理基端口:exit_id -> BASE + id
+DEFAULT_EXIT_COUNT = env_int("EXIT_COUNT", 3, 1, 8)   # 出口槽数量,可配
+
+
+def exit_resources(exit_id: int, tun_prefix: str = TUN_PREFIX) -> dict[str, Any]:
+    """按 exit_id 派生固定资源(端口/设备/路由表)。"""
+    return {
+        "exit_id": exit_id,
+        "proxy_port": BASE_PROXY_PORT + exit_id,
+        "tun_dev": f"{tun_prefix}{exit_id}",
+        "route_table": TABLE_BASE + exit_id,
+    }
+
 UI_HOST = os.environ.get("UI_HOST", "::")
 UI_PORT = env_int("UI_PORT", 8787, 1, 65535)
 INVALID_BACKOFF_SECONDS = env_int("INVALID_BACKOFF_SECONDS", 30 * 60, 1)
