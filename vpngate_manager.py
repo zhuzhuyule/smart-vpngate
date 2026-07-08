@@ -228,6 +228,42 @@ def generate_random_username() -> str:
             if has_lower and has_upper and has_digit:
                 return uname
 
+def default_exit_config() -> dict[str, Any]:
+    return {"mode": "auto", "force_country": "", "routing_ip_type": "all", "region_fail_fallback": False}
+
+
+def migrate_legacy_exits(cfg: dict[str, Any], slots: int = DEFAULT_EXIT_COUNT) -> dict[str, Any]:
+    """确保 cfg['exits'] 存在且长度为 slots。
+    无 exits 时：从旧单出口字段迁移出 exits[0]（fixed_ip/favorites 降级为 auto）。
+    有 exits 时：保留，并补齐/截断到 slots 长度。
+    """
+    exits = cfg.get("exits")
+    if not isinstance(exits, list) or not exits:
+        mode = cfg.get("routing_mode", "auto")
+        if mode not in ("auto", "fixed_region"):
+            if mode in ("fixed_ip", "favorites"):
+                log_to_json("INFO", "Migration", f"旧路由模式 {mode} 不支持多出口，已降级为 auto")
+            mode = "auto"
+        exits = [{
+            "mode": mode,
+            "force_country": cfg.get("force_country", ""),
+            "routing_ip_type": cfg.get("routing_ip_type", "all"),
+            "region_fail_fallback": bool(cfg.get("region_fail_fallback", False)),
+        }]
+    normalized: list[dict[str, Any]] = []
+    for i in range(slots):
+        src = exits[i] if i < len(exits) else default_exit_config()
+        item = default_exit_config()
+        item["mode"] = "fixed_region" if src.get("mode") == "fixed_region" else "auto"
+        item["force_country"] = str(src.get("force_country") or "")
+        rit = src.get("routing_ip_type", "all")
+        item["routing_ip_type"] = rit if rit in ("all", "residential", "hosting") else "all"
+        item["region_fail_fallback"] = bool(src.get("region_fail_fallback", False))
+        normalized.append(item)
+    cfg["exits"] = normalized
+    return cfg
+
+
 def load_ui_config() -> dict[str, Any]:
     with lock:
         auth_file = DATA_DIR / "ui_auth.json"
