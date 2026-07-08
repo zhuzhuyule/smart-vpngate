@@ -1534,7 +1534,7 @@ def test_node_by_id(node_id: str) -> dict[str, Any]:
     idx = None
     try:
         idx = get_free_test_index()
-        ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=f"tun{idx}")
+        ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=f"{TEST_TUN_PREFIX}{idx}")
     finally:
         if idx is not None:
             release_test_index(idx)
@@ -1625,7 +1625,7 @@ def test_multiple_nodes(node_ids: list[str]) -> list[dict[str, Any]]:
         tun_idx = None
         try:
             tun_idx = get_free_test_index()
-            dev_name = f"tun{tun_idx}"
+            dev_name = f"{TEST_TUN_PREFIX}{tun_idx}"
             ok, message, _ = run_openvpn_until_ready(str(temp_path), keep_alive=False, route_nopull=True, timeout=12, dev=dev_name)
         finally:
             if tun_idx is not None:
