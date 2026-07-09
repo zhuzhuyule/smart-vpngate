@@ -150,9 +150,8 @@ BLACKLIST_FILE = DATA_DIR / "blacklist.json"
 lock = threading.RLock()
 maintenance_lock = threading.Lock()
 active_sessions: dict[str, float] = {}
-active_openvpn_process: subprocess.Popen[str] | None = None
-active_openvpn_node_id = ""
-is_connecting = False
+active_openvpn_node_id = ""   # exit 0 节点镜像（供尚未改造的旧读者；exit_runtime[0] 为真相）
+is_connecting = False         # exit 0 连接标志 / 维护&手动测试守卫（后续可拆分为独立 flag）
 last_active_ping_time = 0.0
 last_active_latency = 0
 
@@ -177,10 +176,7 @@ def get_exit_runtime(exit_id: int) -> dict[str, Any]:
 
 
 def set_exit_process(exit_id: int, proc: subprocess.Popen[str] | None) -> None:
-    global active_openvpn_process
     get_exit_runtime(exit_id)["process"] = proc
-    if exit_id == 0:  # 过渡期镜像：尚未改造的旧读者仍读全局
-        active_openvpn_process = proc
 
 
 def set_exit_node_id(exit_id: int, node_id: str) -> None:
@@ -537,9 +533,9 @@ def safe_name(value: str) -> str:
     return value.strip("._") or "node"
 
 def clear_active_connection_state(message: str) -> None:
-    global active_openvpn_process, active_openvpn_node_id
-    stop_process(active_openvpn_process)
-    active_openvpn_process = None
+    global active_openvpn_node_id
+    stop_process(get_exit_runtime(0)["process"])
+    set_exit_process(0, None)
     active_openvpn_node_id = ""
     with lock:
         nodes = read_nodes()
@@ -1312,7 +1308,8 @@ def stop_active_openvpn() -> None:
     stop_exit(0)
 
 def active_openvpn_running() -> bool:
-    return active_openvpn_process is not None and active_openvpn_process.poll() is None
+    # 出口 0 的隧道是否在运行（exit_runtime[0] 为唯一真相）
+    return exit_process_running(0)
 
 def sort_all_nodes(nodes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     available_nodes = sorted(
@@ -1861,6 +1858,50 @@ def auto_switch_node(exit_id: int = 0, attempt: int = 0) -> None:
 
         threading.Thread(target=bg_fetch_and_switch, daemon=True).start()
 
+def _safe_exit_connect(node_id: str, exit_id: int) -> None:
+    try:
+        connect_node(node_id, exit_id)
+    except Exception as e:
+        print(f"[并发连接] 出口 {exit_id} 连接 {node_id} 失败：{e}", flush=True)
+
+
+def connect_disconnected_exits_parallel(ui_cfg: dict[str, Any]) -> None:
+    """为所有未连接的出口并发建立连接：先在同一把锁下原子地预选并预留节点
+    （避免并发抢到同一节点），再并行执行各自的 OpenVPN 握手（设备/路由表互相独立）。"""
+    if not ui_cfg.get("connection_enabled", True):
+        return
+    exits = ui_cfg.get("exits", [])
+    plan: list[tuple[int, str]] = []
+    with lock:
+        nodes = read_nodes()
+        taken = taken_exits_map(nodes)
+        by_id = {str(n.get("id")): n for n in nodes}
+        diverse = ui_cfg.get("prefer_diverse_regions", False)
+        for eid in range(len(exits)):
+            if exit_process_running(eid):
+                continue
+            avoid: set[str] = set()
+            if diverse:
+                for nid, oid in taken.items():
+                    if oid != eid:
+                        nd = by_id.get(str(nid))
+                        if nd:
+                            avoid.add(normalized_country_name(nd.get("country")))
+            pick = select_exit_node(nodes, exits[eid], eid, taken, avoid)
+            if pick:
+                taken[str(pick["id"])] = eid  # 预留，后续出口不会再选到同一节点
+                plan.append((eid, str(pick["id"])))
+    if not plan:
+        return
+    threads = []
+    for eid, nid in plan:
+        t = threading.Thread(target=_safe_exit_connect, args=(nid, eid), daemon=True)
+        t.start()
+        threads.append(t)
+    for t in threads:
+        t.join()
+
+
 def connect_node(node_id: str, exit_id: int = 0) -> str:
     node_id = str(node_id or "").strip()
     if not node_id:
@@ -2036,11 +2077,8 @@ def maintain_valid_nodes(force: bool = False, target_countries: list[str] | None
                 return "没有拉取到新节点"
             cfg_now = load_ui_config()
             is_connecting = False  # 释放维护守卫，允许 exit 0（镜像全局）connect
-            # 1. 先补连各未连接的出口（不必等整池测完，出口尽快上线）
-            if cfg_now.get("connection_enabled", True):
-                for eid in range(len(cfg_now.get("exits", []))):
-                    if not exit_process_running(eid):
-                        auto_switch_node(eid)
+            # 1. 先补连各未连接的出口（并发，不必等整池测完，出口尽快上线）
+            connect_disconnected_exits_parallel(cfg_now)
             # 2. 再对现有池（排除在用节点）重新测速，避免一直沿用陈旧结果
             with lock:
                 taken = taken_exits_map(read_nodes())
@@ -2114,9 +2152,7 @@ def maintain_valid_nodes(force: bool = False, target_countries: list[str] | None
                 set_state(is_connecting=True, last_check_message=msg)
                 test_multiple_nodes(fast_test_ids)
                 is_connecting = False  # 释放维护守卫，允许各出口 connect（exit 0 经全局镜像）
-                for eid in range(len(exits)):
-                    if not exit_process_running(eid):
-                        auto_switch_node(eid)
+                connect_disconnected_exits_parallel(ui_cfg)
                 is_connecting = True
 
         # 测试其余未被占用的节点，补全节点表
@@ -2145,11 +2181,9 @@ def maintain_valid_nodes(force: bool = False, target_countries: list[str] | None
             print(f"[周期检测] {status_report}", flush=True)
             log_to_json("INFO", "Main", status_report)
 
-        # 为每个仍未连接的出口补齐连接（共享池、按 active_exit 互斥）
+        # 为每个仍未连接的出口并发补齐连接（共享池、按 active_exit 互斥）
         if connection_enabled:
-            for eid in range(len(exits)):
-                if not exit_process_running(eid):
-                    auto_switch_node(eid)
+            connect_disconnected_exits_parallel(ui_cfg)
 
         valid_nodes_count = len([n for n in read_nodes() if n.get("probe_status") == "available"])
         message = f"Fetched {len(candidates)} nodes. Tested {len(to_test_ids)} non-active nodes."
