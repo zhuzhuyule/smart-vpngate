@@ -330,6 +330,7 @@ def load_ui_config() -> dict[str, Any]:
             "fav_fail_fallback": False,
             "region_fail_fallback": False,
             "prefer_diverse_regions": False,
+            "exit_count": DEFAULT_EXIT_COUNT,
             "tun_prefix": TUN_PREFIX,
             "exits": [],
             "discovery_countries": []
@@ -340,7 +341,7 @@ def load_ui_config() -> dict[str, Any]:
                 data = json.loads(auth_file.read_text(encoding="utf-8"))
                 for key, val in data.items():
                     config[key] = val
-                for key in ["host", "port", "proxy_port", "routing_mode", "force_country", "routing_ip_type", "connection_enabled", "fixed_node_id", "favorite_node_ids", "fav_fail_fallback", "region_fail_fallback", "prefer_diverse_regions", "tun_prefix", "exits", "discovery_countries"]:
+                for key in ["host", "port", "proxy_port", "routing_mode", "force_country", "routing_ip_type", "connection_enabled", "fixed_node_id", "favorite_node_ids", "fav_fail_fallback", "region_fail_fallback", "prefer_diverse_regions", "exit_count", "tun_prefix", "exits", "discovery_countries"]:
                     if key not in data:
                         updated = True
             except Exception:
@@ -369,7 +370,9 @@ def load_ui_config() -> dict[str, Any]:
             config["proxy_port"] = normalized_proxy_port
             updated = True
 
-        config = migrate_legacy_exits(config, slots=DEFAULT_EXIT_COUNT)
+        slots = bounded_int(config.get("exit_count"), DEFAULT_EXIT_COUNT, 1, 10)
+        config["exit_count"] = slots
+        config = migrate_legacy_exits(config, slots=slots)
 
         if not auth_file.exists() or updated:
             try:
@@ -524,6 +527,7 @@ def get_state() -> dict[str, Any]:
     state["fav_fail_fallback"] = False
     state["region_fail_fallback"] = bool(ui_cfg.get("region_fail_fallback", False))
     state["prefer_diverse_regions"] = bool(ui_cfg.get("prefer_diverse_regions", False))
+    state["exit_count"] = bounded_int(ui_cfg.get("exit_count"), DEFAULT_EXIT_COUNT, 1, 10)
     state["discovery_countries"] = ui_cfg.get("discovery_countries", [])
     
     return state
@@ -3671,6 +3675,11 @@ INDEX_HTML = r"""<!doctype html>
         <input type="checkbox" id="exits_diverse" style="width:15px; height:15px; margin:2px 0 0 0; flex:0 0 auto; accent-color:var(--primary); cursor:pointer;">
         <span>地区分散：<strong>自动</strong>出口尽量避开其他出口已用的国家，让各出口分布在不同地区。关闭时（默认）自动出口只挑最快节点，可能与其它出口落在同一地区。</span>
       </label>
+      <div style="display:flex; align-items:center; gap:10px; margin-bottom:14px;">
+        <label class="form-label" for="exits_count" style="margin:0; font-size:13px; color:var(--text-primary);">出口数量</label>
+        <input type="number" id="exits_count" min="1" max="10" onchange="onExitCountChange()" style="width:76px; height:34px; background:rgba(255,255,255,0.03); border:1px solid var(--border-color); color:var(--text-primary); border-radius:8px; padding:0 10px; outline:none;">
+        <span style="font-size:12px; color:var(--text-secondary);">1~10 个；改动数量后保存会自动重启生效</span>
+      </div>
       <div id="exits_form_rows"></div>
       <div id="exits_save_msg" style="font-size: 13px; margin: 8px 0; display: none;"></div>
       <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 8px;">
@@ -4288,9 +4297,43 @@ function onExitModeChange(i){
   row.querySelector(".ex-country").disabled = !isFixed;
 }
 
+function gatherExitRows(){
+  const out = [];
+  document.querySelectorAll("#exits_form_rows .exit-row").forEach(r => {
+    out.push({
+      mode: r.querySelector(".ex-mode").value,
+      force_country: r.querySelector(".ex-country").value,
+      routing_ip_type: r.querySelector(".ex-iptype").value,
+      region_fail_fallback: r.querySelector(".ex-fallback").checked,
+    });
+  });
+  return out;
+}
+
+function rebuildExitRows(count, seed){
+  const cur = seed || gatherExitRows();
+  let html = "";
+  for(let i=0;i<count;i++){
+    const cfg = cur[i] || {mode:"auto", force_country:"", routing_ip_type:"all", region_fail_fallback:false};
+    const port = (state.exits && state.exits[i]) ? state.exits[i].proxy_port : (7928 + i);
+    html += exitRowHtml(i, {config: cfg, proxy_port: port});
+  }
+  $("exits_form_rows").innerHTML = html;
+}
+
+function onExitCountChange(){
+  let c = parseInt($("exits_count").value, 10);
+  if(isNaN(c) || c < 1) c = 1;
+  if(c > 10) c = 10;
+  $("exits_count").value = c;
+  rebuildExitRows(c);
+}
+
 function openExitsModal(){
   const exits = state.exits || [];
-  $("exits_form_rows").innerHTML = exits.length ? exits.map((ex,i)=>exitRowHtml(i,ex)).join("") : "<div style='color:var(--text-secondary);'>暂无出口配置</div>";
+  const cnt = exits.length || (state.exit_count || 3);
+  const ci = $("exits_count"); if(ci) ci.value = cnt;
+  rebuildExitRows(cnt, exits.map(ex => ex.config || {mode:"auto", force_country:"", routing_ip_type:"all", region_fail_fallback:false}));
   const dv = $("exits_diverse"); if(dv) dv.checked = !!state.prefer_diverse_regions;
   const msg = $("exits_save_msg"); if(msg) msg.style.display = "none";
   const dd = $("admin_dropdown"); if(dd) dd.style.display = "none";
@@ -4330,7 +4373,12 @@ async function saveExits(){
     const data = await res.json();
     if(res.ok && data.ok){
       if(msg){ msg.style.display="block"; msg.style.color="var(--success)"; msg.textContent = data.message || "已保存"; }
-      setTimeout(closeExitsModal, 900);
+      if(data.restart_needed){
+        if(msg){ msg.textContent = (data.message || "已保存") + "（页面将在几秒后自动刷新）"; }
+        setTimeout(()=>window.location.reload(), 3800);
+      } else {
+        setTimeout(closeExitsModal, 900);
+      }
     } else {
       if(msg){ msg.style.display="block"; msg.style.color="var(--danger)"; msg.textContent = data.error || "保存失败"; }
     }
@@ -6188,6 +6236,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not isinstance(raw_exits, list) or not raw_exits:
                     self.send_json({"ok": False, "error": "缺少 exits 配置"}, HTTPStatus.BAD_REQUEST)
                     return
+                if len(raw_exits) > 10:
+                    self.send_json({"ok": False, "error": "出口数量最多 10 个"}, HTTPStatus.BAD_REQUEST)
+                    return
                 clean: list[dict[str, Any]] = []
                 for i, ex in enumerate(raw_exits):
                     if not isinstance(ex, dict):
@@ -6209,15 +6260,26 @@ class Handler(BaseHTTPRequestHandler):
                                   "region_fail_fallback": bool(ex.get("region_fail_fallback"))})
 
                 ui_cfg = load_ui_config()
+                old_count = bounded_int(ui_cfg.get("exit_count"), DEFAULT_EXIT_COUNT, 1, 10)
                 ui_cfg["exits"] = clean
+                ui_cfg["exit_count"] = len(clean)
                 if "prefer_diverse_regions" in payload:
                     ui_cfg["prefer_diverse_regions"] = bool(payload.get("prefer_diverse_regions"))
                 auth_file = DATA_DIR / "ui_auth.json"
                 with lock:
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
                     write_json(auth_file, ui_cfg)
-                enforce_exits_after_config_change(ui_cfg)
-                self.send_json({"ok": True, "message": "多出口配置已更新，正在按新规则调整各出口……"})
+                if len(clean) != old_count:
+                    # 出口数量变化：需重启以启停对应的代理线程与隧道
+                    self.send_json({"ok": True, "restart_needed": True, "message": f"出口数量已改为 {len(clean)}，将在 2 秒内重启以生效……"})
+                    def _restart_exits():
+                        time.sleep(2)
+                        print(f"[系统] 出口数量变更为 {len(clean)}，进程退出以触发重启……", flush=True)
+                        os._exit(0)
+                    threading.Thread(target=_restart_exits, daemon=True).start()
+                else:
+                    enforce_exits_after_config_change(ui_cfg)
+                    self.send_json({"ok": True, "message": "多出口配置已更新，正在按新规则调整各出口……"})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
