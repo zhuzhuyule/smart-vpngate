@@ -329,6 +329,7 @@ def load_ui_config() -> dict[str, Any]:
             "favorite_node_ids": [],
             "fav_fail_fallback": False,
             "region_fail_fallback": False,
+            "prefer_diverse_regions": False,
             "tun_prefix": TUN_PREFIX,
             "exits": [],
             "discovery_countries": []
@@ -339,7 +340,7 @@ def load_ui_config() -> dict[str, Any]:
                 data = json.loads(auth_file.read_text(encoding="utf-8"))
                 for key, val in data.items():
                     config[key] = val
-                for key in ["host", "port", "proxy_port", "routing_mode", "force_country", "routing_ip_type", "connection_enabled", "fixed_node_id", "favorite_node_ids", "fav_fail_fallback", "region_fail_fallback", "tun_prefix", "exits", "discovery_countries"]:
+                for key in ["host", "port", "proxy_port", "routing_mode", "force_country", "routing_ip_type", "connection_enabled", "fixed_node_id", "favorite_node_ids", "fav_fail_fallback", "region_fail_fallback", "prefer_diverse_regions", "tun_prefix", "exits", "discovery_countries"]:
                     if key not in data:
                         updated = True
             except Exception:
@@ -522,6 +523,7 @@ def get_state() -> dict[str, Any]:
     state["favorite_node_ids"] = ui_cfg.get("favorite_node_ids", [])
     state["fav_fail_fallback"] = False
     state["region_fail_fallback"] = bool(ui_cfg.get("region_fail_fallback", False))
+    state["prefer_diverse_regions"] = bool(ui_cfg.get("prefer_diverse_regions", False))
     state["discovery_countries"] = ui_cfg.get("discovery_countries", [])
     
     return state
@@ -1793,14 +1795,15 @@ def auto_switch_node(exit_id: int = 0, attempt: int = 0) -> None:
         taken = taken_exits_map(nodes)
         rt = get_exit_runtime(exit_id)
         taken.pop(str(rt["node_id"]), None)
-        # 其他出口已用的国家：auto / 兜底 选点时优先避开，避免多个出口撞同一地区
-        by_id = {str(n.get("id")): n for n in nodes}
+        # 仅当用户开启「地区分散」选项时，才优先避开其他出口已用的国家
         avoid_countries = set()
-        for nid, eid in taken.items():
-            if eid != exit_id:
-                nd = by_id.get(str(nid))
-                if nd:
-                    avoid_countries.add(normalized_country_name(nd.get("country")))
+        if ui_cfg.get("prefer_diverse_regions", False):
+            by_id = {str(n.get("id")): n for n in nodes}
+            for nid, eid in taken.items():
+                if eid != exit_id:
+                    nd = by_id.get(str(nid))
+                    if nd:
+                        avoid_countries.add(normalized_country_name(nd.get("country")))
         next_node = select_exit_node(nodes, exit_cfg, exit_id, taken, avoid_countries)
 
     if next_node:
@@ -3649,6 +3652,10 @@ INDEX_HTML = r"""<!doctype html>
         </button>
       </div>
       <p style="margin: 0 0 12px 0; font-size: 12px; color: var(--text-secondary); line-height: 1.5;">每个出口对应一个本地代理端口（7928 起递增），可各自锁定国家、限定 IP 类型。系统会自动为各出口分配互不重复的节点。</p>
+      <label for="exits_diverse" style="display:flex; align-items:flex-start; gap:8px; margin-bottom:14px; cursor:pointer; font-size:12.5px; color:var(--text-secondary); line-height:1.5; padding:10px 12px; background:rgba(255,255,255,0.02); border:1px solid var(--border-color); border-radius:8px;">
+        <input type="checkbox" id="exits_diverse" style="width:15px; height:15px; margin:2px 0 0 0; flex:0 0 auto; accent-color:var(--primary); cursor:pointer;">
+        <span>地区分散：<strong>自动</strong>出口尽量避开其他出口已用的国家，让各出口分布在不同地区。关闭时（默认）自动出口只挑最快节点，可能与其它出口落在同一地区。</span>
+      </label>
       <div id="exits_form_rows"></div>
       <div id="exits_save_msg" style="font-size: 13px; margin: 8px 0; display: none;"></div>
       <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 8px;">
@@ -4210,6 +4217,7 @@ function onExitModeChange(i){
 function openExitsModal(){
   const exits = state.exits || [];
   $("exits_form_rows").innerHTML = exits.length ? exits.map((ex,i)=>exitRowHtml(i,ex)).join("") : "<div style='color:var(--text-secondary);'>暂无出口配置</div>";
+  const dv = $("exits_diverse"); if(dv) dv.checked = !!state.prefer_diverse_regions;
   const msg = $("exits_save_msg"); if(msg) msg.style.display = "none";
   const dd = $("admin_dropdown"); if(dd) dd.style.display = "none";
   $("exits_modal").style.display = "flex";
@@ -4232,8 +4240,9 @@ async function saveExits(){
     });
   }
   const msg = $("exits_save_msg");
+  const preferDiverse = !!($("exits_diverse") && $("exits_diverse").checked);
   try {
-    const res = await fetch("./api/update_exits", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({exits}) });
+    const res = await fetch("./api/update_exits", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({exits, prefer_diverse_regions: preferDiverse}) });
     const data = await res.json();
     if(res.ok && data.ok){
       if(msg){ msg.style.display="block"; msg.style.color="var(--success)"; msg.textContent = data.message || "已保存"; }
@@ -6090,6 +6099,8 @@ class Handler(BaseHTTPRequestHandler):
 
                 ui_cfg = load_ui_config()
                 ui_cfg["exits"] = clean
+                if "prefer_diverse_regions" in payload:
+                    ui_cfg["prefer_diverse_regions"] = bool(payload.get("prefer_diverse_regions"))
                 auth_file = DATA_DIR / "ui_auth.json"
                 with lock:
                     DATA_DIR.mkdir(exist_ok=True, parents=True)
