@@ -4156,7 +4156,7 @@ function renderExitsPanel(){
     </div>
     <div style="display:flex;flex-direction:column;gap:10px;">`;
   const statBlock = (label, value) => `<div style="min-width:0;">
-      <div style="font-size:11px;color:var(--text-secondary);margin-bottom:3px;letter-spacing:.3px;">${label}</div>
+      <div style="font-size:11px;color:var(--text-secondary);margin-bottom:4px;letter-spacing:.3px;">${label}</div>
       <div style="font-size:13px;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${value}</div>
     </div>`;
   exits.forEach((ex,i)=>{
@@ -4168,10 +4168,13 @@ function renderExitsPanel(){
     const target = cfg.mode === "fixed_region" ? (esc(translateCountry(cfg.force_country) || cfg.force_country || "锁定地区")) : "自动最佳";
     const ipTag = (cfg.routing_ip_type && cfg.routing_ip_type !== "all") ? `<span style="color:var(--text-secondary);"> · ${esc(translateIpType(cfg.routing_ip_type))}</span>` : "";
     const flag = node ? flagEmoji(node.country_short) : "";
-    const loc = node ? (node.location || translateCountry(node.country) || "") : "";
+    const country = node ? (translateCountry(node.country) || node.country || "") : "";
     const nodeAddr = node ? `${esc(node.ip || node.remote_host || "")}:${node.remote_port || ""}` : "";
     const latClass = ex.latency ? getLatencyClass(ex.latency) : "";
-    const nodeVal = connected ? `${flag ? flag + " " : ""}${esc(loc)} <span class="mono" style="color:var(--text-secondary);font-size:12px;">${nodeAddr}</span>` : `<span style="color:var(--text-secondary);">—</span>`;
+    // 当前节点：放大国旗 + 国家 + IP:端口（去掉冗长的城市名）
+    const nodeVal = connected
+      ? `<span style="font-size:17px;vertical-align:-2px;">${flag}</span> ${esc(country)} <span class="mono" style="color:var(--text-secondary);font-size:12px;">${nodeAddr}</span>`
+      : `<span style="color:var(--text-secondary);">未连接</span>`;
     const latVal = ex.latency ? `<span class="latency-val ${latClass}">${ex.latency} ms</span>` : `<span style="color:var(--text-secondary);">—</span>`;
     html += `<div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;background:var(--bg-surface);border:1px solid var(--border-color);border-left:3px solid ${dot};border-radius:12px;padding:14px 18px;">
         <div style="display:flex;align-items:center;gap:12px;min-width:132px;">
@@ -4181,12 +4184,13 @@ function renderExitsPanel(){
             <div style="font-size:11px;color:var(--text-secondary);">代理 <span class="mono">:${ex.proxy_port || ""}</span> · ${esc(statusText)}</div>
           </div>
         </div>
-        <div style="flex:1;display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:12px 22px;min-width:0;">
+        <div style="flex:1;display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px 22px;min-width:0;">
           ${statBlock("目标", `<strong>${target}</strong>${ipTag}`)}
           ${statBlock("当前节点", nodeVal)}
           ${statBlock("出口 IP", `<span class="mono">${esc(ex.proxy_ip || "-")}</span>`)}
           ${statBlock("延迟", latVal)}
         </div>
+        <button data-exit-test="${i}" onclick="testExit(${i})" style="flex:0 0 auto;height:32px;padding:0 14px;font-size:12px;border-radius:8px;border:1px solid var(--border-color);background:rgba(255,255,255,0.03);color:var(--text-secondary);cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:all .15s;" onmouseover="this.style.background='rgba(255,255,255,0.07)';this.style.color='var(--text-primary)';" onmouseout="this.style.background='rgba(255,255,255,0.03)';this.style.color='var(--text-secondary)';">测速</button>
       </div>`;
   });
   html += `</div>`;
@@ -4267,6 +4271,16 @@ function openExitsModal(){
 }
 
 function closeExitsModal(){ $("exits_modal").style.display = "none"; }
+
+async function testExit(i){
+  const btn = document.querySelector(`[data-exit-test="${i}"]`);
+  if(btn){ btn.disabled = true; btn.style.opacity = "0.6"; btn.textContent = "测速中…"; }
+  try {
+    await fetch("./api/test_exit", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({exit_id:i}) });
+  } catch(e) {}
+  // 重新拉取状态并渲染（按钮会随面板重建而复位）
+  if (typeof load === "function") { await load(); } else { render(); }
+}
 
 async function saveExits(){
   const rows = document.querySelectorAll("#exits_form_rows .exit-row");
@@ -6157,6 +6171,32 @@ class Handler(BaseHTTPRequestHandler):
                     write_json(auth_file, ui_cfg)
                 enforce_exits_after_config_change(ui_cfg)
                 self.send_json({"ok": True, "message": "多出口配置已更新，正在按新规则调整各出口……"})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        elif effective_path == "/api/test_exit":
+            try:
+                payload = self.read_json_body()
+                eid = int(payload.get("exit_id", 0))
+                rt = get_exit_runtime(eid)
+                node_id = rt["node_id"]
+                # 1. 重测该出口当前节点的 ping 延迟
+                if node_id:
+                    node = next((n for n in read_nodes() if n.get("id") == node_id), None)
+                    if node:
+                        ip = node.get("ip") or node.get("remote_host")
+                        lat = vpn_utils.ping_latency_ms(ip, parse_int(node.get("remote_port")), parse_int(node.get("ping")))
+                        rt["latency"] = lat if lat > 0 else 0
+                        set_exit_state(eid, latency=rt["latency"])
+                # 2. 重测该出口的代理出站连通性与出口 IP
+                res = check_proxy_health(eid)
+                if res["ok"]:
+                    set_exit_state(eid, proxy_ok=True, proxy_ip=res["ip"], proxy_latency_ms=res["latency_ms"], proxy_error="")
+                    self.send_json({"ok": True, "ip": res["ip"], "latency_ms": res["latency_ms"], "ping": rt["latency"]})
+                else:
+                    set_exit_state(eid, proxy_ok=False, proxy_ip="-", proxy_latency_ms=0, proxy_error=res.get("error", ""))
+                    self.send_json({"ok": False, "error": res.get("error", "出口测速失败")})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
