@@ -5591,6 +5591,39 @@ def active_node_pinger() -> None:
         time.sleep(10)
 
 
+def _local_port_listening(port: int) -> bool:
+    """探测本地某端口是否在监听（用于网关自检各出口代理）。"""
+    is_ipv6 = ":" in LOCAL_PROXY_HOST
+    af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
+    host = LOCAL_PROXY_HOST
+    if host in ("::", "0.0.0.0", ""):
+        host = "::1" if is_ipv6 else "127.0.0.1"
+    s = None
+    try:
+        s = socket.socket(af, socket.SOCK_STREAM)
+        s.settimeout(0.5)
+        s.connect((host, port))
+        return True
+    except Exception:
+        if host == "::1":
+            try:
+                if s is not None:
+                    s.close()
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.5)
+                s.connect(("127.0.0.1", port))
+                return True
+            except Exception:
+                return False
+        return False
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
+
+
 def enforce_exits_after_config_change(ui_cfg: dict[str, Any]) -> None:
     """配置变更后，逐出口检查其当前节点是否仍符合新配置，不符合则后台切换该出口。"""
     exits = ui_cfg.get("exits", [])
@@ -5758,62 +5791,34 @@ class Handler(BaseHTTPRequestHandler):
                 "details": f"监听地址: {load_ui_config().get('host', UI_HOST)}:{load_ui_config().get('port', UI_PORT)}",
                 "error": ""
             }
-            proxy_ok = False
-            proxy_err = ""
-            is_ipv6 = ":" in LOCAL_PROXY_HOST
-            af = socket.AF_INET6 if is_ipv6 else socket.AF_INET
-            s = None
-            try:
-                s = socket.socket(af, socket.SOCK_STREAM)
-                s.settimeout(0.5)
-                connect_host = LOCAL_PROXY_HOST
-                if connect_host in ("::", "0.0.0.0", ""):
-                    connect_host = "::1" if is_ipv6 else "127.0.0.1"
-                try:
-                    s.connect((connect_host, LOCAL_PROXY_PORT))
-                    proxy_ok = True
-                except Exception:
-                    if connect_host == "::1":
-                        s.close()
-                        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                        s.settimeout(0.5)
-                        s.connect(("127.0.0.1", LOCAL_PROXY_PORT))
-                        proxy_ok = True
-                    else:
-                        raise
-            except Exception as e:
-                diag = vpn_utils.diagnose_local_obstructions(LOCAL_PROXY_PORT, host=LOCAL_PROXY_HOST)
-                proxy_err = diag[1] if diag else f"本地代理网关无法连通: {e}"
-            finally:
-                if s is not None:
-                    try:
-                        s.close()
-                    except Exception:
-                        pass
-            proxy_gateway_status = {
-                "name": "本地代理网关",
-                "status": "running" if proxy_ok else "stopped",
-                "details": f"监听地址: {LOCAL_PROXY_HOST}:{LOCAL_PROXY_PORT}",
-                "error": proxy_err
-            }
-            ovpn_ok = active_openvpn_running()
-            ovpn_err = ""
-            ovpn_details = "未连接"
-            if ovpn_ok:
-                ovpn_details = f"已连接节点: {active_openvpn_node_id}"
-                if sys.platform.startswith("linux"):
-                    if not Path("/sys/class/net/tun0").exists():
-                        ovpn_err = "[警告] 虚拟网卡 (tun0) 未启用，可能存在策略路由配置问题。"
-            else:
-                if active_openvpn_node_id:
-                    ovpn_err = "连接已中断或 OpenVPN 核心程序异常退出。"
-                    ovpn_details = f"尝试连接节点 {active_openvpn_node_id} 失败"
-            openvpn_status = {
-                "name": "OpenVPN 核心连接",
-                "status": "running" if ovpn_ok else "stopped",
-                "details": ovpn_details,
-                "error": ovpn_err
-            }
+            # 按出口逐个生成「代理网关 + 隧道」状态卡（多出口）
+            _gw_cfg = load_ui_config()
+            _gw_prefix = _gw_cfg.get("tun_prefix", TUN_PREFIX)
+            _gw_n = len(_gw_cfg.get("exits", []))
+            exit_cards = []
+            for eid in range(_gw_n):
+                _res = exit_resources(eid, _gw_prefix)
+                _port = _res["proxy_port"]
+                _dev = _res["tun_dev"]
+                port_ok = _local_port_listening(_port)
+                proc_ok = exit_process_running(eid)
+                dev_ok = (not sys.platform.startswith("linux")) or Path(f"/sys/class/net/{_dev}").exists()
+                node_id = get_exit_runtime(eid)["node_id"]
+                card_err = ""
+                if not port_ok:
+                    card_err = f"代理端口 {_port} 未在监听。"
+                elif not proc_ok:
+                    card_err = "OpenVPN 隧道未运行（等待连接或已断开）。"
+                elif not dev_ok:
+                    card_err = f"[警告] 虚拟网卡 {_dev} 未启用，可能存在策略路由配置问题。"
+                detail = f"监听 {LOCAL_PROXY_HOST}:{_port} → 网卡 {_dev}"
+                detail += f"｜已连接节点 {node_id}" if node_id else "｜未连接节点"
+                exit_cards.append({
+                    "name": f"出口 {eid} 代理网关",
+                    "status": "running" if (port_ok and proc_ok) else "stopped",
+                    "details": detail,
+                    "error": card_err,
+                })
             now = time.time()
             server_uptime = now - server_start_time
             collector_ok = (last_collector_heartbeat > 0.0 and now - last_collector_heartbeat < (CHECK_INTERVAL_SECONDS * 1.5)) or (server_uptime < 15.0)
@@ -5841,8 +5846,7 @@ class Handler(BaseHTTPRequestHandler):
                 "ok": True,
                 "services": [
                     web_ui_status,
-                    proxy_gateway_status,
-                    openvpn_status,
+                    *exit_cards,
                     collector_status,
                     checker_status,
                     pinger_status
