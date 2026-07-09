@@ -3453,7 +3453,7 @@ INDEX_HTML = r"""<!doctype html>
       <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" fill="currentColor" viewBox="0 0 16 16" style="vertical-align: middle; margin-right: 4px;"><path d="M16 8A8 8 0 1 1 0 8a8 8 0 0 1 16 0zM8.287 5.906c-.778.324-2.334.994-4.666 2.01-.378.15-.577.298-.595.442-.03.243.275.339.69.47l.175.055c.408.133.958.288 1.243.294.26.006.549-.1.868-.32 2.179-1.471 3.304-2.214 3.374-2.23.05-.012.12-.026.166.016.047.041.042.12.037.141-.03.129-1.227 1.241-1.846 1.817-.193.18-.33.307-.358.336-.063.065-.129.13-.19.193-.34.347-.597.609-.043.974.265.175.474.319.684.457.228.15.457.301.765.503.074.049.143.098.207.143.297.206.58.404.916.373.195-.018.398-.2.502-.754.25-1.332.74-4.22.842-5.281.01-.088.001-.22-.103-.312-.104-.092-.252-.09-.323-.087a1.52 1.52 0 0 0-.254.04z"/></svg>
       Telegram
     </a>
-    <button id="refresh" class="btn-primary" style="background: var(--success-gradient);">
+    <button id="refresh" class="btn-primary" style="background: var(--success-gradient); display:inline-flex; align-items:center; justify-content:center; gap:8px;">
       <svg xmlns="http://www.w3.org/2000/svg" style="width:16px; height:16px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 8H18.5" /></svg>
       更新节点
     </button>
@@ -4139,25 +4139,32 @@ function renderExitsPanel(){
   const exits = state.exits || [];
   if(exits.length <= 1){ panel.innerHTML = ""; return; }
   let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-      <h3 style="margin:0;font-size:16px;font-weight:700;color:var(--text-primary);">多出口 (${exits.length})</h3>
-      <button onclick="openExitsModal()" class="btn-primary" style="height:32px;padding:0 14px;font-size:12px;border-radius:8px;">配置出口</button>
+      <h3 style="margin:0;font-size:16px;font-weight:700;color:var(--text-primary);">出口通道 (${exits.length})</h3>
+      <button onclick="openExitsModal()" class="btn-primary" style="height:32px;padding:0 14px;font-size:12px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;gap:6px;">配置出口</button>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;">`;
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px;">`;
   exits.forEach((ex,i)=>{
     const cfg = ex.config || {};
     const connected = !!ex.active_node_id;
+    const node = connected ? (nodes || []).find(n => n && n.id === ex.active_node_id) : null;
     const dot = ex.is_connecting ? "#f59e0b" : (ex.proxy_ok ? "#34d399" : (connected ? "#f59e0b" : "#f43f5e"));
-    const statusText = ex.is_connecting ? "连接中" : (ex.proxy_ok ? "正常" : (connected ? "隧道在，代理异常" : "未连接"));
-    const target = cfg.mode === "fixed_region" ? esc(translateCountry(cfg.force_country) || cfg.force_country || "锁定地区") : "自动最佳";
+    const statusText = ex.is_connecting ? "连接中" : (ex.proxy_ok ? "正常" : (connected ? "隧道在·代理异常" : "未连接"));
+    const target = cfg.mode === "fixed_region" ? (esc(translateCountry(cfg.force_country) || cfg.force_country || "锁定地区")) : "自动最佳";
     const ipTag = (cfg.routing_ip_type && cfg.routing_ip_type !== "all") ? ` · ${esc(translateIpType(cfg.routing_ip_type))}` : "";
-    html += `<div style="background:var(--bg-surface);border:1px solid var(--border-color);border-radius:12px;padding:14px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;">
-          <strong style="font-size:13px;color:var(--text-primary);">出口 ${i} · <span class="mono">:${ex.proxy_port || ""}</span></strong>
+    const flag = node ? flagEmoji(node.country_short) : "";
+    const loc = node ? (node.location || translateCountry(node.country) || "") : "";
+    const nodeAddr = node ? `${esc(node.ip || node.remote_host || "")}:${node.remote_port || ""}` : "";
+    const latClass = ex.latency ? getLatencyClass(ex.latency) : "";
+    html += `<div style="background:var(--bg-surface);border:1px solid var(--border-color);border-left:3px solid ${dot};border-radius:12px;padding:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
+          <strong style="font-size:14px;color:var(--text-primary);">出口 ${i}<span style="color:var(--text-secondary);font-weight:500;font-size:12px;"> · 代理 <span class="mono">:${ex.proxy_port || ""}</span></span></strong>
           <span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text-secondary);"><span style="width:8px;height:8px;border-radius:50%;background:${dot};display:inline-block;"></span>${esc(statusText)}</span>
         </div>
-        <div style="margin-top:8px;font-size:12px;color:var(--text-secondary);">目标：<strong style="color:var(--text-primary);">${target}${ipTag}</strong></div>
-        <div style="margin-top:4px;font-size:12px;color:var(--text-secondary);">节点：<strong style="color:var(--text-primary);">${connected ? esc(ex.active_node_id) : "—"}</strong></div>
-        <div style="margin-top:4px;font-size:12px;color:var(--text-secondary);">出口 IP：<span class="mono" style="color:var(--text-primary);">${esc(ex.proxy_ip || "-")}</span>${ex.latency ? ` · ${ex.latency} ms` : ""}</div>
+        <div style="font-size:12px;color:var(--text-secondary);line-height:1.95;">
+          <div>目标：<strong style="color:var(--text-primary);">${target}${ipTag}</strong></div>
+          <div>节点：<strong style="color:var(--text-primary);">${connected ? (flag ? flag + " " : "") + esc(loc) : "—"}</strong>${nodeAddr ? ` <span class="mono" style="color:var(--text-secondary);">${nodeAddr}</span>` : ""}</div>
+          <div>出口 IP：<span class="mono" style="color:var(--text-primary);">${esc(ex.proxy_ip || "-")}</span>${ex.latency ? ` · <span class="latency-val ${latClass}">${ex.latency} ms</span>` : ""}</div>
+        </div>
       </div>`;
   });
   html += `</div>`;
@@ -4276,7 +4283,10 @@ function render(){
   
   // Render separated Active Node Card
   const activeCardContainer = $("active_node_card");
-  if (state.is_connecting && !activeNode) {
+  if ((state.exits || []).length > 1) {
+    // 多出口：下方「出口通道」面板已分别展示各出口，隐藏这张仅反映出口 0 的旧卡片，避免重复
+    activeCardContainer.innerHTML = "";
+  } else if (state.is_connecting && !activeNode) {
     const busyTitle = state.maintenance_running ? "正在更新节点" : "正在连接";
     const busyLatency = state.maintenance_running ? "节点检测中" : (state.active_node_latency || "正在连接...");
     const busyMessage = state.last_check_message || (state.maintenance_running ? "正在后台拉取并检测节点，已完成的结果会实时显示在下方列表。" : "正在与 VPN 节点建立加密隧道，请稍候...");
