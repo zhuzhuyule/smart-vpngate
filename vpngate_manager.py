@@ -4139,31 +4139,41 @@ function renderExitsPanel(){
   const exits = state.exits || [];
   if(exits.length <= 1){ panel.innerHTML = ""; return; }
   let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
-      <h3 style="margin:0;font-size:16px;font-weight:700;color:var(--text-primary);">出口通道 (${exits.length})</h3>
+      <h3 style="margin:0;font-size:16px;font-weight:700;color:var(--text-primary);">出口通道 <span style="color:var(--text-secondary);font-weight:500;font-size:13px;">共 ${exits.length} 条</span></h3>
       <button onclick="openExitsModal()" class="btn-primary" style="height:32px;padding:0 14px;font-size:12px;border-radius:8px;display:inline-flex;align-items:center;justify-content:center;gap:6px;">配置出口</button>
     </div>
-    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:12px;">`;
+    <div style="display:flex;flex-direction:column;gap:10px;">`;
+  const statBlock = (label, value) => `<div style="min-width:0;">
+      <div style="font-size:11px;color:var(--text-secondary);margin-bottom:3px;letter-spacing:.3px;">${label}</div>
+      <div style="font-size:13px;color:var(--text-primary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${value}</div>
+    </div>`;
   exits.forEach((ex,i)=>{
     const cfg = ex.config || {};
     const connected = !!ex.active_node_id;
     const node = connected ? (nodes || []).find(n => n && n.id === ex.active_node_id) : null;
     const dot = ex.is_connecting ? "#f59e0b" : (ex.proxy_ok ? "#34d399" : (connected ? "#f59e0b" : "#f43f5e"));
-    const statusText = ex.is_connecting ? "连接中" : (ex.proxy_ok ? "正常" : (connected ? "隧道在·代理异常" : "未连接"));
+    const statusText = ex.is_connecting ? "连接中" : (ex.proxy_ok ? "正常" : (connected ? "代理异常" : "未连接"));
     const target = cfg.mode === "fixed_region" ? (esc(translateCountry(cfg.force_country) || cfg.force_country || "锁定地区")) : "自动最佳";
-    const ipTag = (cfg.routing_ip_type && cfg.routing_ip_type !== "all") ? ` · ${esc(translateIpType(cfg.routing_ip_type))}` : "";
+    const ipTag = (cfg.routing_ip_type && cfg.routing_ip_type !== "all") ? `<span style="color:var(--text-secondary);"> · ${esc(translateIpType(cfg.routing_ip_type))}</span>` : "";
     const flag = node ? flagEmoji(node.country_short) : "";
     const loc = node ? (node.location || translateCountry(node.country) || "") : "";
     const nodeAddr = node ? `${esc(node.ip || node.remote_host || "")}:${node.remote_port || ""}` : "";
     const latClass = ex.latency ? getLatencyClass(ex.latency) : "";
-    html += `<div style="background:var(--bg-surface);border:1px solid var(--border-color);border-left:3px solid ${dot};border-radius:12px;padding:14px;">
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;">
-          <strong style="font-size:14px;color:var(--text-primary);">出口 ${i}<span style="color:var(--text-secondary);font-weight:500;font-size:12px;"> · 代理 <span class="mono">:${ex.proxy_port || ""}</span></span></strong>
-          <span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text-secondary);"><span style="width:8px;height:8px;border-radius:50%;background:${dot};display:inline-block;"></span>${esc(statusText)}</span>
+    const nodeVal = connected ? `${flag ? flag + " " : ""}${esc(loc)} <span class="mono" style="color:var(--text-secondary);font-size:12px;">${nodeAddr}</span>` : `<span style="color:var(--text-secondary);">—</span>`;
+    const latVal = ex.latency ? `<span class="latency-val ${latClass}">${ex.latency} ms</span>` : `<span style="color:var(--text-secondary);">—</span>`;
+    html += `<div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;background:var(--bg-surface);border:1px solid var(--border-color);border-left:3px solid ${dot};border-radius:12px;padding:14px 18px;">
+        <div style="display:flex;align-items:center;gap:12px;min-width:132px;">
+          <span style="width:10px;height:10px;border-radius:50%;background:${dot};box-shadow:0 0 8px ${dot}66;flex:0 0 auto;"></span>
+          <div>
+            <div style="font-size:15px;font-weight:700;color:var(--text-primary);line-height:1.2;">出口 ${i}</div>
+            <div style="font-size:11px;color:var(--text-secondary);">代理 <span class="mono">:${ex.proxy_port || ""}</span> · ${esc(statusText)}</div>
+          </div>
         </div>
-        <div style="font-size:12px;color:var(--text-secondary);line-height:1.95;">
-          <div>目标：<strong style="color:var(--text-primary);">${target}${ipTag}</strong></div>
-          <div>节点：<strong style="color:var(--text-primary);">${connected ? (flag ? flag + " " : "") + esc(loc) : "—"}</strong>${nodeAddr ? ` <span class="mono" style="color:var(--text-secondary);">${nodeAddr}</span>` : ""}</div>
-          <div>出口 IP：<span class="mono" style="color:var(--text-primary);">${esc(ex.proxy_ip || "-")}</span>${ex.latency ? ` · <span class="latency-val ${latClass}">${ex.latency} ms</span>` : ""}</div>
+        <div style="flex:1;display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:12px 22px;min-width:0;">
+          ${statBlock("目标", `<strong>${target}</strong>${ipTag}`)}
+          ${statBlock("当前节点", nodeVal)}
+          ${statBlock("出口 IP", `<span class="mono">${esc(ex.proxy_ip || "-")}</span>`)}
+          ${statBlock("延迟", latVal)}
         </div>
       </div>`;
   });
