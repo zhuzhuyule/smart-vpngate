@@ -2016,14 +2016,26 @@ def maintain_valid_nodes(force: bool = False, target_countries: list[str] | None
             candidates = []
 
         if not candidates:
-            # 拉取失败/为空时，仍尝试用现有已测可用节点为各未连接出口补齐连接
+            # 拉取失败/为空：改为对现有节点池重新测速一遍（避免一直沿用陈旧结果），再为各出口补连
+            existing = read_nodes()
+            if not existing:
+                return "没有拉取到新节点"
             cfg_now = load_ui_config()
+            with lock:
+                taken = taken_exits_map(existing)
+                to_test_ids = [n["id"] for n in existing if n.get("id") and str(n.get("id")) not in taken]
+            if to_test_ids:
+                set_state(is_connecting=True, last_check_message="官方 API 暂不可达，正在对现有节点池重新测速……")
+                test_multiple_nodes(to_test_ids)
+            is_connecting = False  # 释放维护守卫，允许 exit 0（镜像全局）connect
             if cfg_now.get("connection_enabled", True):
-                is_connecting = False  # 释放维护守卫，允许 exit 0（镜像全局）connect
                 for eid in range(len(cfg_now.get("exits", []))):
                     if not exit_process_running(eid):
                         auto_switch_node(eid)
-            return "没有拉取到新节点（已尝试用现有节点为各出口补齐连接）"
+            valid = len([n for n in read_nodes() if n.get("probe_status") == "available"])
+            set_state(last_check_at=time.time(), valid_nodes=valid,
+                      last_check_message=f"官方 API 暂不可达，已重测现有 {len(existing)} 个节点并补连各出口（可用 {valid}）")
+            return "官方 API 暂不可达，已对现有节点池重新测试并补连各出口"
 
         # 合并：保留所有被任一出口占用的节点及其探测字段，再并入新候选
         with lock:
@@ -4574,7 +4586,7 @@ function refreshButtonBusy(message = "正在后台更新...") {
   const btn = $("refresh");
   if (!btn) return;
   btn.disabled = true;
-  btn.innerHTML = `<svg style="animation: spin 1s linear infinite; width:16px; height:16px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 8H18.5" /></svg>${esc(message)}`;
+  btn.innerHTML = `<span style="display:inline-block;width:15px;height:15px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%;animation:spin 0.7s linear infinite;flex:0 0 auto;opacity:0.85;"></span>${esc(message)}`;
 }
 
 function refreshButtonIdle() {
