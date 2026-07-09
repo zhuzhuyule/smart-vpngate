@@ -1441,6 +1441,7 @@ def select_exit_node(
     exit_id: int,
     taken: dict[str, int],
     avoid_countries: set[str] | None = None,
+    exclude_node_id: str | None = None,
 ) -> dict[str, Any] | None:
     """为某出口从共享池选一个「可用且未被别的出口占用」的最佳节点。
     taken: node_id -> 占用它的 exit_id。
@@ -1452,6 +1453,7 @@ def select_exit_node(
         n for n in nodes
         if n.get("probe_status") == "available"
         and taken.get(str(n.get("id"))) in (None, exit_id)
+        and (exclude_node_id is None or str(n.get("id")) != str(exclude_node_id))
     ]
     view = exit_routing_view(exit_cfg)
     candidates, _ = filter_switch_candidates(free, view)
@@ -1485,6 +1487,8 @@ def set_node_active_exit(node_id: str, exit_id: int | None) -> None:
             if str(n.get("id")) == str(node_id):
                 n["active_exit"] = exit_id
                 n["active"] = exit_id is not None  # 兼容仍读 active 的旧 UI/逻辑
+                if exit_id is not None:
+                    n["connect_fails"] = 0  # 连接成功，重置软失败计数
         write_json(NODES_FILE, nodes)
 
 def validate_node_allowed_by_routing(node: dict[str, Any], ui_cfg: dict[str, Any]) -> None:
@@ -1907,11 +1911,17 @@ def connect_node(node_id: str, exit_id: int = 0) -> str:
                     config_path.unlink()
             except Exception:
                 pass
-            node["probe_status"] = "unavailable"
-            node["probe_message"] = message
+            # 软失败：连续失败达阈值才判死，避免一次偶发（本地资源竞争等）就误伤好节点
+            fails = (parse_int(node.get("connect_fails")) or 0) + 1
+            node["connect_fails"] = fails
+            if fails >= 2:
+                node["probe_status"] = "unavailable"
+                node["probe_message"] = message
+            else:
+                node["probe_message"] = f"连接失败（第 {fails}/2 次，暂保留待重试）：{message}"
             write_json(NODES_FILE, nodes)
-            log_to_json("ERROR", "VPN", f"出口 {exit_id} 连接节点 {node_id} 失败: {message}")
-            print(f"[连接核心失败] 出口 {exit_id} 无法与 VPN 节点 {node_id} 建立隧道连接！详情: {message}", flush=True)
+            log_to_json("ERROR", "VPN", f"出口 {exit_id} 连接节点 {node_id} 失败（{fails}/2）: {message}")
+            print(f"[连接核心失败] 出口 {exit_id} 无法与 VPN 节点 {node_id} 建立隧道连接（第 {fails}/2 次）！详情: {message}", flush=True)
             set_exit_state(exit_id, active_node_id="", is_connecting=False, last_message=f"连接失败: {message}")
             set_exit_node_id(exit_id, "")
             raise RuntimeError(message)
@@ -4226,7 +4236,10 @@ function renderExitsPanel(){
           ${statBlock("IP 类型", iptLabel)}
           ${statBlock("延迟", latVal)}
         </div>
-        <button data-exit-test="${i}" onclick="testExit(${i})" style="flex:0 0 auto;height:32px;padding:0 14px;font-size:12px;border-radius:8px;border:1px solid var(--border-color);background:rgba(255,255,255,0.03);color:var(--text-secondary);cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:all .15s;" onmouseover="this.style.background='rgba(255,255,255,0.07)';this.style.color='var(--text-primary)';" onmouseout="this.style.background='rgba(255,255,255,0.03)';this.style.color='var(--text-secondary)';">测速</button>
+        <div style="flex:0 0 auto;display:flex;gap:8px;">
+          <button data-exit-switch="${i}" onclick="switchExit(${i})" style="height:32px;padding:0 12px;font-size:12px;border-radius:8px;border:1px solid var(--border-color);background:rgba(255,255,255,0.03);color:var(--text-secondary);cursor:pointer;transition:all .15s;" onmouseover="this.style.background='rgba(255,255,255,0.07)';this.style.color='var(--text-primary)';" onmouseout="this.style.background='rgba(255,255,255,0.03)';this.style.color='var(--text-secondary)';">换节点</button>
+          <button data-exit-test="${i}" onclick="testExit(${i})" style="height:32px;padding:0 14px;font-size:12px;border-radius:8px;border:1px solid var(--border-color);background:rgba(255,255,255,0.03);color:var(--text-secondary);cursor:pointer;transition:all .15s;" onmouseover="this.style.background='rgba(255,255,255,0.07)';this.style.color='var(--text-primary)';" onmouseout="this.style.background='rgba(255,255,255,0.03)';this.style.color='var(--text-secondary)';">测速</button>
+        </div>
       </div>`;
   });
   html += `</div>`;
@@ -4349,6 +4362,17 @@ async function testExit(i){
     await fetch("./api/test_exit", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({exit_id:i}) });
   } catch(e) {}
   // 重新拉取状态并渲染（按钮会随面板重建而复位）
+  if (typeof load === "function") { await load(); } else { render(); }
+}
+
+async function switchExit(i){
+  const btn = document.querySelector(`[data-exit-switch="${i}"]`);
+  if(btn){ btn.disabled = true; btn.style.opacity = "0.6"; btn.textContent = "切换中…"; }
+  try {
+    const res = await fetch("./api/switch_exit", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({exit_id:i}) });
+    const data = await res.json();
+    if(!(res.ok && data.ok)){ alert(data.error || "换节点失败"); }
+  } catch(e) { alert("网络错误，请重试"); }
   if (typeof load === "function") { await load(); } else { render(); }
 }
 
@@ -6306,6 +6330,45 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     set_exit_state(eid, proxy_ok=False, proxy_ip="-", proxy_latency_ms=0, proxy_error=res.get("error", ""))
                     self.send_json({"ok": False, "error": res.get("error", "出口测速失败")})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        elif effective_path == "/api/switch_exit":
+            try:
+                payload = self.read_json_body()
+                eid = int(payload.get("exit_id", 0))
+                current = get_exit_runtime(eid)["node_id"]
+                ui_cfg = load_ui_config()
+                exits_cfg = ui_cfg.get("exits", [])
+                if eid >= len(exits_cfg):
+                    self.send_json({"ok": False, "error": f"出口 {eid} 不存在"}, HTTPStatus.BAD_REQUEST)
+                    return
+                exit_cfg = exits_cfg[eid]
+                with lock:
+                    nodes = read_nodes()
+                    taken = taken_exits_map(nodes)
+                    taken.pop(str(current), None)
+                    avoid = set()
+                    if ui_cfg.get("prefer_diverse_regions", False):
+                        by_id = {str(n.get("id")): n for n in nodes}
+                        for nid, oid in taken.items():
+                            if oid != eid:
+                                nd = by_id.get(str(nid))
+                                if nd:
+                                    avoid.add(normalized_country_name(nd.get("country")))
+                    pick = select_exit_node(nodes, exit_cfg, eid, taken, avoid, exclude_node_id=current)
+                if not pick:
+                    self.send_json({"ok": False, "error": "没有其他可用节点，已维持当前连接"})
+                    return
+
+                def _do_switch():
+                    try:
+                        connect_node(pick["id"], eid)
+                    except Exception as e:
+                        print(f"[换节点] 出口 {eid} 切换到 {pick['id']} 失败: {e}", flush=True)
+                threading.Thread(target=_do_switch, daemon=True).start()
+                self.send_json({"ok": True, "message": f"出口 {eid} 正在切换到节点 {pick['id']}……"})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
