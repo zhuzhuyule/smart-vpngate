@@ -3443,6 +3443,10 @@ INDEX_HTML = r"""<!doctype html>
           <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" /><path stroke-linecap="round" stroke-linejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
           代理设置
         </a>
+        <a href="javascript:void(0)" onclick="openExitsModal()">
+          <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" /></svg>
+          多出口
+        </a>
         <a href="javascript:void(0)" onclick="openGatewayModal()">
           <svg xmlns="http://www.w3.org/2000/svg" style="width:14px; height:14px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
           网关设置
@@ -3465,6 +3469,9 @@ INDEX_HTML = r"""<!doctype html>
     <section class="active-node-section" id="active_node_card" style="margin-bottom: 24px;">
       <!-- Rendered dynamically by render() -->
     </section>
+
+    <!-- 多出口状态面板（render() 动态填充，单出口时留空） -->
+    <section id="exits_panel" style="margin-bottom: 24px;"></section>
 
 
 
@@ -3603,6 +3610,25 @@ INDEX_HTML = r"""<!doctype html>
           <button type="submit" id="credentials_submit_btn" class="btn-primary" style="height: 40px; padding: 0 20px; font-weight: 600; border-radius: 8px;">保存修改</button>
         </div>
       </form>
+    </div>
+  </div>
+
+  <!-- Exits Modal (多出口配置) -->
+  <div id="exits_modal" class="modal">
+    <div class="modal-content" style="max-width: 640px; width: 95%;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h3 style="margin: 0; font-size: 18px; font-weight: 700; color: var(--text-primary);">多出口配置</h3>
+        <button type="button" onclick="closeExitsModal()" style="background: transparent; border: none; padding: 4px; cursor: pointer; color: var(--text-secondary); width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 50%;">
+          <svg xmlns="http://www.w3.org/2000/svg" style="width:18px; height:18px;" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+        </button>
+      </div>
+      <p style="margin: 0 0 12px 0; font-size: 12px; color: var(--text-secondary); line-height: 1.5;">每个出口对应一个本地代理端口（7928 起递增），可各自锁定国家、限定 IP 类型。系统会自动为各出口分配互不重复的节点。</p>
+      <div id="exits_form_rows"></div>
+      <div id="exits_save_msg" style="font-size: 13px; margin: 8px 0; display: none;"></div>
+      <div style="display: flex; gap: 12px; justify-content: flex-end; margin-top: 8px;">
+        <button type="button" onclick="closeExitsModal()" style="height: 38px; padding: 0 18px; font-weight: 600; border-radius: 8px; border: 1px solid var(--border-color); background: transparent; color: var(--text-secondary); cursor: pointer;">取消</button>
+        <button type="button" onclick="saveExits()" class="btn-primary" style="height: 38px; padding: 0 20px; font-weight: 600; border-radius: 8px;">保存</button>
+      </div>
     </div>
   </div>
 
@@ -4082,7 +4108,128 @@ function stableSortNodes() {
   });
 }
 
+function renderExitsPanel(){
+  const panel = $("exits_panel");
+  if(!panel) return;
+  const exits = state.exits || [];
+  if(exits.length <= 1){ panel.innerHTML = ""; return; }
+  let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+      <h3 style="margin:0;font-size:16px;font-weight:700;color:var(--text-primary);">多出口 (${exits.length})</h3>
+      <button onclick="openExitsModal()" class="btn-primary" style="height:32px;padding:0 14px;font-size:12px;border-radius:8px;">配置出口</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;">`;
+  exits.forEach((ex,i)=>{
+    const cfg = ex.config || {};
+    const connected = !!ex.active_node_id;
+    const dot = ex.is_connecting ? "#f59e0b" : (ex.proxy_ok ? "#34d399" : (connected ? "#f59e0b" : "#f43f5e"));
+    const statusText = ex.is_connecting ? "连接中" : (ex.proxy_ok ? "正常" : (connected ? "隧道在，代理异常" : "未连接"));
+    const target = cfg.mode === "fixed_region" ? esc(translateCountry(cfg.force_country) || cfg.force_country || "锁定地区") : "自动最佳";
+    const ipTag = (cfg.routing_ip_type && cfg.routing_ip_type !== "all") ? ` · ${esc(translateIpType(cfg.routing_ip_type))}` : "";
+    html += `<div style="background:var(--bg-surface);border:1px solid var(--border-color);border-radius:12px;padding:14px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;">
+          <strong style="font-size:13px;color:var(--text-primary);">出口 ${i} · <span class="mono">:${ex.proxy_port || ""}</span></strong>
+          <span style="display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--text-secondary);"><span style="width:8px;height:8px;border-radius:50%;background:${dot};display:inline-block;"></span>${esc(statusText)}</span>
+        </div>
+        <div style="margin-top:8px;font-size:12px;color:var(--text-secondary);">目标：<strong style="color:var(--text-primary);">${target}${ipTag}</strong></div>
+        <div style="margin-top:4px;font-size:12px;color:var(--text-secondary);">节点：<strong style="color:var(--text-primary);">${connected ? esc(ex.active_node_id) : "—"}</strong></div>
+        <div style="margin-top:4px;font-size:12px;color:var(--text-secondary);">出口 IP：<span class="mono" style="color:var(--text-primary);">${esc(ex.proxy_ip || "-")}</span>${ex.latency ? ` · ${ex.latency} ms` : ""}</div>
+      </div>`;
+  });
+  html += `</div>`;
+  panel.innerHTML = html;
+}
+
+function buildExitCountryOptions(selected){
+  const set = new Set();
+  (nodes || []).forEach(n => { if(n && n.country) set.add(n.country); });
+  if(selected) set.add(selected);
+  let opts = `<option value="">— 选择国家 —</option>`;
+  Array.from(set).sort().forEach(c => {
+    opts += `<option value="${esc(c)}" ${c === selected ? "selected" : ""}>${esc(translateCountry(c))}</option>`;
+  });
+  return opts;
+}
+
+function exitRowHtml(i, ex){
+  const cfg = ex.config || {};
+  const mode = cfg.mode || "auto";
+  const fc = cfg.force_country || "";
+  const it = cfg.routing_ip_type || "all";
+  const fb = !!cfg.region_fail_fallback;
+  return `<div class="exit-row" data-idx="${i}" style="border:1px solid var(--border-color);border-radius:10px;padding:12px;margin-bottom:10px;background:rgba(255,255,255,0.02);">
+      <div style="font-weight:600;margin-bottom:8px;color:var(--text-primary);">出口 ${i} · 端口 <span class="mono">:${ex.proxy_port || (7928 + i)}</span></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <label style="font-size:12px;color:var(--text-secondary);">模式
+          <select class="ex-mode input-field" onchange="onExitModeChange(${i})" style="height:34px;width:100%;margin-top:4px;">
+            <option value="auto" ${mode === "auto" ? "selected" : ""}>自动最佳</option>
+            <option value="fixed_region" ${mode === "fixed_region" ? "selected" : ""}>固定地区</option>
+          </select>
+        </label>
+        <label style="font-size:12px;color:var(--text-secondary);">锁定国家
+          <select class="ex-country input-field" style="height:34px;width:100%;margin-top:4px;" ${mode === "auto" ? "disabled" : ""}>${buildExitCountryOptions(fc)}</select>
+        </label>
+        <label style="font-size:12px;color:var(--text-secondary);">IP 出站类型
+          <select class="ex-iptype input-field" style="height:34px;width:100%;margin-top:4px;">
+            <option value="all" ${it === "all" ? "selected" : ""}>全部</option>
+            <option value="residential" ${it === "residential" ? "selected" : ""}>住宅</option>
+            <option value="hosting" ${it === "hosting" ? "selected" : ""}>机房</option>
+          </select>
+        </label>
+        <label style="font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:8px;margin-top:22px;cursor:pointer;">
+          <input type="checkbox" class="ex-fallback" ${fb ? "checked" : ""} style="width:15px;height:15px;accent-color:var(--primary);"> 该国无节点时允许跨国兜底
+        </label>
+      </div>
+    </div>`;
+}
+
+function onExitModeChange(i){
+  const row = document.querySelector(`#exits_form_rows .exit-row[data-idx="${i}"]`);
+  if(!row) return;
+  const isFixed = row.querySelector(".ex-mode").value === "fixed_region";
+  row.querySelector(".ex-country").disabled = !isFixed;
+}
+
+function openExitsModal(){
+  const exits = state.exits || [];
+  $("exits_form_rows").innerHTML = exits.length ? exits.map((ex,i)=>exitRowHtml(i,ex)).join("") : "<div style='color:var(--text-secondary);'>暂无出口配置</div>";
+  const msg = $("exits_save_msg"); if(msg) msg.style.display = "none";
+  const dd = $("admin_dropdown"); if(dd) dd.style.display = "none";
+  $("exits_modal").style.display = "flex";
+}
+
+function closeExitsModal(){ $("exits_modal").style.display = "none"; }
+
+async function saveExits(){
+  const rows = document.querySelectorAll("#exits_form_rows .exit-row");
+  const exits = [];
+  for(const r of rows){
+    const mode = r.querySelector(".ex-mode").value;
+    const fc = r.querySelector(".ex-country").value;
+    if(mode === "fixed_region" && !fc){ alert("固定地区模式必须选择一个国家"); return; }
+    exits.push({
+      mode,
+      force_country: fc,
+      routing_ip_type: r.querySelector(".ex-iptype").value,
+      region_fail_fallback: r.querySelector(".ex-fallback").checked,
+    });
+  }
+  const msg = $("exits_save_msg");
+  try {
+    const res = await fetch("./api/update_exits", { method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify({exits}) });
+    const data = await res.json();
+    if(res.ok && data.ok){
+      if(msg){ msg.style.display="block"; msg.style.color="var(--success)"; msg.textContent = data.message || "已保存"; }
+      setTimeout(closeExitsModal, 900);
+    } else {
+      if(msg){ msg.style.display="block"; msg.style.color="var(--danger)"; msg.textContent = data.error || "保存失败"; }
+    }
+  } catch(e){
+    if(msg){ msg.style.display="block"; msg.style.color="var(--danger)"; msg.textContent = "网络错误，请重试"; }
+  }
+}
+
 function render(){
+  renderExitsPanel();
   const activeNodeId = state.active_openvpn_node_id;
   const activeNode = nodes.find(n => n && (n.active || n.id === activeNodeId));
   
