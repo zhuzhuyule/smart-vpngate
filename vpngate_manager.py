@@ -3596,12 +3596,12 @@ INDEX_HTML = r"""<!doctype html>
       <table>
         <thead>
           <tr>
-            <th style="width: 90px;">状态</th>
-            <th style="width: 100px;">延迟</th>
-            <th style="width: 220px;">IP 地址 : 端口</th>
-            <th>物理位置</th>
-            <th>运营主体 / ISP</th>
-            <th style="width: 110px;">IP 类型</th>
+            <th style="width: 90px; cursor:pointer; user-select:none;" onclick="setSort('status')">状态 <span class="sort-ind" data-k="status" style="color:var(--primary);"></span></th>
+            <th style="width: 100px; cursor:pointer; user-select:none;" onclick="setSort('latency')">延迟 <span class="sort-ind" data-k="latency" style="color:var(--primary);"></span></th>
+            <th style="width: 220px; cursor:pointer; user-select:none;" onclick="setSort('ip')">IP 地址 : 端口 <span class="sort-ind" data-k="ip" style="color:var(--primary);"></span></th>
+            <th style="cursor:pointer; user-select:none;" onclick="setSort('location')">物理位置 <span class="sort-ind" data-k="location" style="color:var(--primary);"></span></th>
+            <th style="cursor:pointer; user-select:none;" onclick="setSort('owner')">运营主体 / ISP <span class="sort-ind" data-k="owner" style="color:var(--primary);"></span></th>
+            <th style="width: 110px; cursor:pointer; user-select:none;" onclick="setSort('iptype')">IP 类型 <span class="sort-ind" data-k="iptype" style="color:var(--primary);"></span></th>
             <th style="width: 230px;">操作</th>
           </tr>
         </thead>
@@ -3944,6 +3944,8 @@ let selectedCountriesInitialized = false; // 首次从后端持久化偏好初�
 let currentPage = 1;
 const pageSize = 99999;
 let currentPageNodes = [];
+let sortKey = null;   // 用户点击表头排序的列
+let sortDir = 1;      // 1 升序，-1 降序
 
 const $=id=>document.getElementById(id);
 const esc=s=>String(s||"").replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#039;"}[c]));
@@ -4144,12 +4146,48 @@ function matchesSiblingFilters(n) {
 }
 
 function getFilteredNodes() {
-  return nodes.filter(n => {
+  const list = nodes.filter(n => {
     if (!n) return false;
     if (selectedCountries.size > 0 && !selectedCountries.has(String(n.country_short || "").toUpperCase())) {
       return false;
     }
     return matchesSiblingFilters(n);
+  });
+  return applyUserSort(list);
+}
+
+function applyUserSort(list){
+  if(!sortKey) return list;
+  const dir = sortDir;
+  const val = (n) => {
+    switch(sortKey){
+      case "latency": return (parseInt(n.latency_ms || n.ping) || 999999);
+      case "status": return ({available:0, testing:1, not_checked:2, unavailable:3}[n.probe_status] ?? 2);
+      case "ip": return (n.ip || n.remote_host || "");
+      case "location": return (n.location || translateCountry(n.country) || "");
+      case "owner": return (n.owner || n.as_name || "");
+      case "iptype": return (translateIpType(n.ip_type) || "");
+      default: return 0;
+    }
+  };
+  return [...list].sort((a,b)=>{
+    const va = val(a), vb = val(b);
+    if(typeof va === "number") return (va - vb) * dir;
+    return String(va).localeCompare(String(vb), "zh") * dir;
+  });
+}
+
+function setSort(key){
+  if(sortKey === key){ sortDir = -sortDir; }
+  else { sortKey = key; sortDir = 1; }
+  currentPage = 1;
+  render();
+}
+
+function updateSortIndicators(){
+  document.querySelectorAll(".sort-ind").forEach(el => {
+    const k = el.getAttribute("data-k");
+    el.textContent = (sortKey === k) ? (sortDir === 1 ? "▲" : "▼") : "";
   });
 }
 
@@ -4413,6 +4451,7 @@ async function saveExits(){
 
 function render(){
   renderExitsPanel();
+  updateSortIndicators();
   const activeNodeId = state.active_openvpn_node_id;
   const activeNode = nodes.find(n => n && (n.active || n.id === activeNodeId));
   
@@ -4573,11 +4612,12 @@ function render(){
   } else {
     $("rows").innerHTML=currentPageNodes.map(n=>{
       if (!n) return '';
-      const isCurrentlyActive = activeNode && n.id === activeNode.id;
+      const occExit = (n.active_exit !== undefined && n.active_exit !== null) ? n.active_exit : (n.active ? 0 : null);
+      const isCurrentlyActive = occExit !== null;
       const rowClass = isCurrentlyActive ? 'class="active-row"' : '';
-      
+
       const badgeClass = isCurrentlyActive ? 'available' : (n.probe_status || 'not_checked');
-      const badgeText = isCurrentlyActive ? '<span class="badge-pulse"></span>已连接' : translateStatus(n.probe_status);
+      const badgeText = isCurrentlyActive ? `<span class="badge-pulse"></span>出口 ${occExit} 使用中` : translateStatus(n.probe_status);
       const latencyClass = getLatencyClass(n.latency_ms || n.ping);
       const latencyText = n.latency_ms
         ? `<span class="latency-val ${latencyClass}">${n.latency_ms} ms</span>`
