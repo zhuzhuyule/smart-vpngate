@@ -1994,7 +1994,13 @@ def maintain_valid_nodes(force: bool = False, target_countries: list[str] | None
             candidates = []
 
         if not candidates:
-            return "没有拉取到新节点"
+            # 拉取失败/为空时，仍尝试用现有已测可用节点为各未连接出口补齐连接
+            cfg_now = load_ui_config()
+            if cfg_now.get("connection_enabled", True):
+                for eid in range(len(cfg_now.get("exits", []))):
+                    if not exit_process_running(eid):
+                        auto_switch_node(eid)
+            return "没有拉取到新节点（已尝试用现有节点为各出口补齐连接）"
 
         # 合并：保留所有被任一出口占用的节点及其探测字段，再并入新候选
         with lock:
