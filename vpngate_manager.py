@@ -4148,6 +4148,12 @@ function stableSortNodes() {
   });
 }
 
+function countryCodeForName(name){
+  if(!name) return "";
+  const hit = (nodes || []).find(x => x && (x.country === name || translateCountry(x.country) === name));
+  return hit ? (hit.country_short || "") : "";
+}
+
 function renderExitsPanel(){
   const panel = $("exits_panel");
   if(!panel) return;
@@ -4168,29 +4174,47 @@ function renderExitsPanel(){
     const node = connected ? (nodes || []).find(n => n && n.id === ex.active_node_id) : null;
     const dot = ex.is_connecting ? "#f59e0b" : (ex.proxy_ok ? "#34d399" : (connected ? "#f59e0b" : "#f43f5e"));
     const statusText = ex.is_connecting ? "连接中" : (ex.proxy_ok ? "正常" : (connected ? "代理异常" : "未连接"));
-    const target = cfg.mode === "fixed_region" ? (esc(translateCountry(cfg.force_country) || cfg.force_country || "锁定地区")) : "自动最佳";
-    const ipTag = (cfg.routing_ip_type && cfg.routing_ip_type !== "all") ? `<span style="color:var(--text-secondary);"> · ${esc(translateIpType(cfg.routing_ip_type))}</span>` : "";
+    const ipTag = (cfg.routing_ip_type && cfg.routing_ip_type !== "all") ? `<span style="color:var(--text-secondary);font-size:11px;"> · ${esc(translateIpType(cfg.routing_ip_type))}</span>` : "";
+    // 目标：国旗 + 国家 +（模式）
+    let targetVal;
+    if(cfg.mode === "fixed_region"){
+      const tc = translateCountry(cfg.force_country) || cfg.force_country || "锁定地区";
+      const tflag = flagEmoji(countryCodeForName(cfg.force_country));
+      targetVal = `${tflag ? `<span style="font-size:16px;vertical-align:-2px;">${tflag}</span> ` : ""}<strong>${esc(tc)}</strong><span style="color:var(--text-secondary);font-size:11px;">（指定国家）</span>${ipTag}`;
+    } else {
+      targetVal = `<strong>自动最佳</strong>${ipTag}`;
+    }
+    // 当前节点：只显示国旗 + 国家（不带 IP/端口）
     const flag = node ? flagEmoji(node.country_short) : "";
     const country = node ? (translateCountry(node.country) || node.country || "") : "";
-    const nodeAddr = node ? `${esc(node.ip || node.remote_host || "")}:${node.remote_port || ""}` : "";
-    const latClass = ex.latency ? getLatencyClass(ex.latency) : "";
-    // 当前节点：放大国旗 + 国家 + IP:端口（去掉冗长的城市名）
     const nodeVal = connected
-      ? `<span style="font-size:17px;vertical-align:-2px;">${flag}</span> ${esc(country)} <span class="mono" style="color:var(--text-secondary);font-size:12px;">${nodeAddr}</span>`
+      ? `<span style="font-size:17px;vertical-align:-2px;">${flag}</span> <strong>${esc(country)}</strong>`
       : `<span style="color:var(--text-secondary);">未连接</span>`;
+    // 出口 IP：IP + 端口
+    const exitPort = node && node.remote_port ? `:${node.remote_port}` : "";
+    const exitIpVal = (ex.proxy_ip && ex.proxy_ip !== "-")
+      ? `<span class="mono">${esc(ex.proxy_ip)}${exitPort}</span>`
+      : `<span class="mono" style="color:var(--text-secondary);">-</span>`;
+    // 延迟
+    const latClass = ex.latency ? getLatencyClass(ex.latency) : "";
     const latVal = ex.latency ? `<span class="latency-val ${latClass}">${ex.latency} ms</span>` : `<span style="color:var(--text-secondary);">—</span>`;
+    // 状态小徽标（红/绿/黄）
+    const badge = `<span style="display:inline-block;padding:1px 8px;border-radius:6px;font-size:10px;font-weight:600;background:${dot}22;color:${dot};border:1px solid ${dot}55;">${esc(statusText)}</span>`;
     html += `<div style="display:flex;align-items:center;gap:18px;flex-wrap:wrap;background:var(--bg-surface);border:1px solid var(--border-color);border-left:3px solid ${dot};border-radius:12px;padding:14px 18px;">
-        <div style="display:flex;align-items:center;gap:12px;min-width:132px;">
+        <div style="display:flex;align-items:center;gap:12px;min-width:150px;">
           <span style="width:10px;height:10px;border-radius:50%;background:${dot};box-shadow:0 0 8px ${dot}66;flex:0 0 auto;"></span>
           <div>
-            <div style="font-size:15px;font-weight:700;color:var(--text-primary);line-height:1.2;">出口 ${i}</div>
-            <div style="font-size:11px;color:var(--text-secondary);">代理 <span class="mono">:${ex.proxy_port || ""}</span> · ${esc(statusText)}</div>
+            <div style="font-size:15px;font-weight:700;color:var(--text-primary);line-height:1.25;">出口 ${i}</div>
+            <div style="display:flex;align-items:center;gap:7px;margin-top:3px;">
+              <span class="mono" style="font-size:13px;color:var(--text-secondary);">:${ex.proxy_port || ""}</span>
+              ${badge}
+            </div>
           </div>
         </div>
         <div style="flex:1;display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px 22px;min-width:0;">
-          ${statBlock("目标", `<strong>${target}</strong>${ipTag}`)}
+          ${statBlock("目标", targetVal)}
           ${statBlock("当前节点", nodeVal)}
-          ${statBlock("出口 IP", `<span class="mono">${esc(ex.proxy_ip || "-")}</span>`)}
+          ${statBlock("出口 IP", exitIpVal)}
           ${statBlock("延迟", latVal)}
         </div>
         <button data-exit-test="${i}" onclick="testExit(${i})" style="flex:0 0 auto;height:32px;padding:0 14px;font-size:12px;border-radius:8px;border:1px solid var(--border-color);background:rgba(255,255,255,0.03);color:var(--text-secondary);cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:all .15s;" onmouseover="this.style.background='rgba(255,255,255,0.07)';this.style.color='var(--text-primary)';" onmouseout="this.style.background='rgba(255,255,255,0.03)';this.style.color='var(--text-secondary)';">测速</button>
