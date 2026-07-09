@@ -4165,12 +4165,26 @@ function renderExitsPanel(){
 }
 
 function buildExitCountryOptions(selected){
-  const set = new Set();
-  (nodes || []).forEach(n => { if(n && n.country) set.add(n.country); });
-  if(selected) set.add(selected);
+  // 汇总「国家 -> {国旗代码, 可用节点数}」，仿节点过滤下拉：带国旗 + 可用数
+  const byCountry = new Map();
+  (nodes || []).forEach(n => {
+    if(!n || !n.country) return;
+    const e = byCountry.get(n.country) || { code: n.country_short || "", count: 0 };
+    if(!e.code && n.country_short) e.code = n.country_short;
+    if(n.probe_status === "available" || n.active) e.count++;
+    byCountry.set(n.country, e);
+  });
+  if(selected && !byCountry.has(selected)) byCountry.set(selected, { code: "", count: 0 });
+  // 按可用数降序、其次中文名，锁哪个国家有货一目了然
+  const entries = Array.from(byCountry.entries()).sort((a, b) => {
+    if(b[1].count !== a[1].count) return b[1].count - a[1].count;
+    return translateCountry(a[0]).localeCompare(translateCountry(b[0]), "zh");
+  });
   let opts = `<option value="">— 选择国家 —</option>`;
-  Array.from(set).sort().forEach(c => {
-    opts += `<option value="${esc(c)}" ${c === selected ? "selected" : ""}>${esc(translateCountry(c))}</option>`;
+  entries.forEach(([country, info]) => {
+    const flag = flagEmoji(info.code);
+    const label = `${flag ? flag + " " : ""}${translateCountry(country)}（可用 ${info.count}）`;
+    opts += `<option value="${esc(country)}" ${country === selected ? "selected" : ""}>${esc(label)}</option>`;
   });
   return opts;
 }
