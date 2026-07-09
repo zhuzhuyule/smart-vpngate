@@ -4009,7 +4009,7 @@ function updateCountryFilter() {
     const code = String(n.country_short).toUpperCase();
     const zh = translateCountry(n.country) || code;
     const entry = byCode.get(code) || { zh, count: 0 };
-    entry.count++;
+    if (matchesSiblingFilters(n)) entry.count++;  // 计数随「状态 / IP 类型」筛选联动
     byCode.set(code, entry);
   }
   const entries = Array.from(byCode.entries()).sort((a, b) => a[1].zh.localeCompare(b[1].zh, "zh"));
@@ -4071,36 +4071,28 @@ function selectAllCountries(selectAll) {
   render();
 }
 
-function getFilteredNodes() {
+function matchesSiblingFilters(n) {
+  // 通过「状态 / IP 类型 / 收藏」筛选（不含国家），供国家计数与节点列表共用
+  if (!n) return false;
   const selectedIpType = $("ip_type_filter").value;
   const selectedStatus = $("status_filter").value;
+  if (selectedIpType === "residential" && !["residential", "mobile"].includes(n.ip_type)) return false;
+  if (selectedIpType === "hosting" && n.ip_type !== "hosting") return false;
+  if (selectedStatus === "available" && n.probe_status !== "available" && !n.active) return false;
+  if (selectedStatus === "testing" && n.probe_status !== "testing") return false;
+  if (selectedStatus === "unavailable" && (n.probe_status !== "unavailable" || n.active)) return false;
+  const favoriteIds = Array.isArray(state.favorite_node_ids) ? state.favorite_node_ids : [];
+  if (showFavoritesOnly && !favoriteIds.includes(n.id)) return false;
+  return true;
+}
+
+function getFilteredNodes() {
   return nodes.filter(n => {
     if (!n) return false;
     if (selectedCountries.size > 0 && !selectedCountries.has(String(n.country_short || "").toUpperCase())) {
       return false;
     }
-    if (selectedIpType) {
-      if (selectedIpType === "residential" && !["residential", "mobile"].includes(n.ip_type)) {
-        return false;
-      }
-      if (selectedIpType === "hosting" && n.ip_type !== "hosting") {
-        return false;
-      }
-    }
-    if (selectedStatus === "available" && n.probe_status !== "available" && !n.active) {
-      return false;
-    }
-    if (selectedStatus === "testing" && n.probe_status !== "testing") {
-      return false;
-    }
-    if (selectedStatus === "unavailable" && (n.probe_status !== "unavailable" || n.active)) {
-      return false;
-    }
-    const favoriteIds = Array.isArray(state.favorite_node_ids) ? state.favorite_node_ids : [];
-    if (showFavoritesOnly && !favoriteIds.includes(n.id)) {
-      return false;
-    }
-    return true;
+    return matchesSiblingFilters(n);
   });
 }
 
@@ -4662,8 +4654,8 @@ async function load(){
     startConnectionPolling();
   }
 }
-$("ip_type_filter").onchange=()=>{ currentPage = 1; render(); };
-$("status_filter").onchange=()=>{ currentPage = 1; render(); };
+$("ip_type_filter").onchange=()=>{ currentPage = 1; updateCountryFilter(); render(); };
+$("status_filter").onchange=()=>{ currentPage = 1; updateCountryFilter(); render(); };
 
 const countryFilterBtn = $("country_filter_btn");
 const countryFilterDropdown = $("country_filter_dropdown");
