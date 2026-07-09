@@ -1147,6 +1147,7 @@ USERNAME="未配置"
 PASSWORD="未配置"
 UI_PORT=8787
 PROXY_PORT=7928
+EXIT_COUNT=3
 AUTH_FILE="${INSTALL_DIR}/vpngate_data/ui_auth.json"
 if [ -f "$AUTH_FILE" ]; then
     SECRET_PATH=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('secret_path', 'EJsW2EeBo9lY'))" 2>/dev/null || echo "EJsW2EeBo9lY")
@@ -1154,6 +1155,7 @@ if [ -f "$AUTH_FILE" ]; then
     PASSWORD=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('password', '未配置'))" 2>/dev/null || echo "未配置")
     UI_PORT=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('port', 8787))" 2>/dev/null || echo "8787")
     PROXY_PORT=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('proxy_port', 7928))" 2>/dev/null || echo "7928")
+    EXIT_COUNT=$(python3 -c "import json; print(json.load(open('$AUTH_FILE')).get('exit_count', 3))" 2>/dev/null || echo "3")
 fi
 
 # Get VPS public IP
@@ -1174,7 +1176,13 @@ if [ -n "$PUBLIC_IPV6" ]; then
 fi
 echo -e "  * 网页管理账号:  ${YELLOW}${USERNAME}${PLAIN}"
 echo -e "  * 网页管理密码:  ${YELLOW}${PASSWORD}${PLAIN}"
-echo -e "  * HTTP/SOCKS5 代理端口:  ${BLUE}http://127.0.0.1:${PROXY_PORT}/${PLAIN}  或  ${BLUE}http://[::1]:${PROXY_PORT}/${PLAIN}"
+if [ "${EXIT_COUNT:-1}" -gt 1 ] 2>/dev/null; then
+    LAST_PROXY_PORT=$((PROXY_PORT + EXIT_COUNT - 1))
+    echo -e "  * 多出口代理端口:  ${BLUE}127.0.0.1:${PROXY_PORT} ~ ${LAST_PROXY_PORT}${PLAIN}  （共 ${EXIT_COUNT} 个出口，出口 0..$((EXIT_COUNT-1)) 各对应一个端口，依次递增）"
+    echo -e "    ${YELLOW}默认仅本机 127.0.0.1 监听；如需对外提供代理，请以 LOCAL_PROXY_HOST=:: 启动，并在云安全组放行 ${PROXY_PORT}-${LAST_PROXY_PORT} 端口段。${PLAIN}"
+else
+    echo -e "  * HTTP/SOCKS5 代理端口:  ${BLUE}http://127.0.0.1:${PROXY_PORT}/${PLAIN}  或  ${BLUE}http://[::1]:${PROXY_PORT}/${PLAIN}"
+fi
 echo -e " --------------------------------------------------------"
 echo -e "  * 快速状态指令:   ${YELLOW}ml status${PLAIN}  或  ${YELLOW}ml${PLAIN}"
 echo -e "  * 查看实时日志:   ${YELLOW}ml logs${PLAIN}"
