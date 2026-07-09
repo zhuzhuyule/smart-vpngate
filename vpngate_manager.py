@@ -1488,6 +1488,27 @@ def set_node_active_exit(node_id: str, exit_id: int | None) -> None:
                     n["connect_fails"] = 0  # 连接成功，重置软失败计数
         write_json(NODES_FILE, nodes)
 
+
+def reconcile_active_exits() -> None:
+    """自愈：以各出口运行时真实在用的节点为唯一真相，校正 nodes.json 里残留的 active_exit。"""
+    ui_cfg = load_ui_config()
+    live: dict[str, int] = {}
+    for eid in range(len(ui_cfg.get("exits", []))):
+        nid = get_exit_runtime(eid)["node_id"]
+        if nid:
+            live[str(nid)] = eid
+    with lock:
+        nodes = read_nodes()
+        changed = False
+        for n in nodes:
+            want = live.get(str(n.get("id")))
+            if n.get("active_exit") != want:
+                n["active_exit"] = want
+                n["active"] = want is not None
+                changed = True
+        if changed:
+            write_json(NODES_FILE, nodes)
+
 def validate_node_allowed_by_routing(node: dict[str, Any], ui_cfg: dict[str, Any]) -> None:
     routing_mode = ui_cfg.get("routing_mode", "auto")
     node_id = str(node.get("id") or "")
@@ -2184,6 +2205,7 @@ def maintain_valid_nodes(force: bool = False, target_countries: list[str] | None
         # 为每个仍未连接的出口并发补齐连接（共享池、按 active_exit 互斥）
         if connection_enabled:
             connect_disconnected_exits_parallel(ui_cfg)
+        reconcile_active_exits()  # 自愈：连接后校正残留的 active_exit
 
         valid_nodes_count = len([n for n in read_nodes() if n.get("probe_status") == "available"])
         message = f"Fetched {len(candidates)} nodes. Tested {len(to_test_ids)} non-active nodes."
@@ -4644,14 +4666,17 @@ function render(){
   if (currentPageNodes.length === 0) {
     $("rows").innerHTML = `<tr><td colspan="7" style="text-align: center; color: var(--text-secondary); padding: 40px 0;">未找到符合过滤条件的备选节点。</td></tr>`;
   } else {
+    // 占用以各出口运行时真实在用的节点为准（state.exits），避免残留 active_exit 误标
+    const exitByNode = {};
+    (state.exits || []).forEach((ex, idx) => { if (ex && ex.active_node_id) exitByNode[String(ex.active_node_id)] = idx; });
     $("rows").innerHTML=currentPageNodes.map(n=>{
       if (!n) return '';
-      const occExit = (n.active_exit !== undefined && n.active_exit !== null) ? n.active_exit : (n.active ? 0 : null);
+      const occExit = (exitByNode[String(n.id)] !== undefined) ? exitByNode[String(n.id)] : null;
       const isCurrentlyActive = occExit !== null;
       const rowClass = isCurrentlyActive ? 'class="active-row"' : '';
 
       const badgeClass = isCurrentlyActive ? 'available' : (n.probe_status || 'not_checked');
-      const badgeText = isCurrentlyActive ? `<span class="badge-pulse"></span>出口 ${occExit} 使用中` : translateStatus(n.probe_status);
+      const badgeText = isCurrentlyActive ? `<span class="badge-pulse"></span>代理 ${occExit + 1}` : translateStatus(n.probe_status);
       const latencyClass = getLatencyClass(n.latency_ms || n.ping);
       const latencyText = n.latency_ms
         ? `<span class="latency-val ${latencyClass}">${n.latency_ms} ms</span>`
@@ -5773,6 +5798,7 @@ def background_proxy_checker() -> None:
             ui_cfg = load_ui_config()
             n_exits = len(ui_cfg.get("exits", []))
             connection_enabled = ui_cfg.get("connection_enabled", True)
+            reconcile_active_exits()  # 自愈：清理残留的 active_exit
             for eid in range(n_exits):
                 if get_exit_connecting(eid):
                     continue
