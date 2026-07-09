@@ -1859,7 +1859,10 @@ def connect_node(node_id: str, exit_id: int = 0) -> str:
             raise ValueError(f"Node not found: {node_id}")
 
         ui_cfg = load_ui_config()
-        validate_node_allowed_by_routing(node, ui_cfg)
+        exits_cfg = ui_cfg.get("exits", [])
+        exit_cfg = exits_cfg[exit_id] if exit_id < len(exits_cfg) else default_exit_config()
+        # 按【本出口】的配置校验，而非全局旧单出口配置
+        validate_node_allowed_by_routing(node, exit_routing_view(exit_cfg))
 
         set_exit_state(exit_id, last_message="正在关闭与清理旧的 VPN 连接及网卡...")
         stop_exit(exit_id)
@@ -1997,6 +2000,7 @@ def maintain_valid_nodes(force: bool = False, target_countries: list[str] | None
             # 拉取失败/为空时，仍尝试用现有已测可用节点为各未连接出口补齐连接
             cfg_now = load_ui_config()
             if cfg_now.get("connection_enabled", True):
+                is_connecting = False  # 释放维护守卫，允许 exit 0（镜像全局）connect
                 for eid in range(len(cfg_now.get("exits", []))):
                     if not exit_process_running(eid):
                         auto_switch_node(eid)
