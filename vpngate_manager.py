@@ -4521,9 +4521,21 @@ function render(){
       // Connect button is disabled if probe status is "unavailable" and not already active, or if we are already connecting
       // Connect button is disabled if probe status is "unavailable" and not already active, or if we are already connecting
       const isUnavailable = n.probe_status === "unavailable";
-      const connectBtn = isCurrentlyActive 
-        ? `<button class="connect-btn" disabled style="background: var(--success-gradient); color: white; cursor: default; opacity: 1;">已连接</button>`
-        : `<button class="connect-btn" ${(isUnavailable || isTesting || state.is_connecting) ? 'disabled style="opacity:0.3; cursor:not-allowed;"' : ''} onclick="connectNode('${esc(n.id)}')">切换</button>`;
+      const _exitsList = state.exits || [];
+      let connectBtn;
+      if (isCurrentlyActive) {
+        connectBtn = `<button class="connect-btn" disabled style="background: var(--success-gradient); color: white; cursor: default; opacity: 1;">已连接</button>`;
+      } else if (_exitsList.length > 1) {
+        const _dis = (isUnavailable || isTesting || state.is_connecting) ? 'disabled' : '';
+        const _opts = _exitsList.map((ex, idx) => {
+          const c = ex.config || {};
+          const lbl = c.mode === "fixed_region" ? (translateCountry(c.force_country) || c.force_country || "锁定") : "自动";
+          return `<option value="${idx}">→ 出口 ${idx} · ${esc(lbl)}</option>`;
+        }).join("");
+        connectBtn = `<select class="connect-btn" ${_dis} style="${_dis ? 'opacity:0.3;cursor:not-allowed;' : ''}" onchange="onSwitchSelect(this, '${esc(n.id)}')"><option value="">切换到…</option>${_opts}</select>`;
+      } else {
+        connectBtn = `<button class="connect-btn" ${(isUnavailable || isTesting || state.is_connecting) ? 'disabled style="opacity:0.3; cursor:not-allowed;"' : ''} onclick="connectNode('${esc(n.id)}')">切换</button>`;
+      }
       
       const favoriteIds = Array.isArray(state.favorite_node_ids) ? state.favorite_node_ids : [];
       const isFav = favoriteIds.includes(n.id);
@@ -4691,20 +4703,28 @@ function startConnectionPolling() {
   }, 1000);
 }
 
-async function connectNode(id){
+function onSwitchSelect(sel, id){
+  const v = sel.value;
+  sel.value = "";
+  if(v === "") return;
+  connectNode(id, parseInt(v, 10));
+}
+
+async function connectNode(id, exitId){
+  const eid = (exitId === undefined || exitId === null) ? 0 : exitId;
   state.is_connecting = true;
   state.active_openvpn_node_id = id;
   state.active_node_latency = "正在连接";
-  state.last_check_message = "正在发送连接请求...";
+  state.last_check_message = `正在切换出口 ${eid} 到该节点...`;
   render();
-  
+
   startConnectionPolling();
-  
+
   try {
     const r = await fetch("./api/connect",{
       method:"POST",
       headers:{"Content-Type":"application/json"},
-      body:JSON.stringify({id})
+      body:JSON.stringify({id, exit_id: eid})
     });
     const result = await r.json();
     if (!result.ok) {
@@ -6390,7 +6410,8 @@ class Handler(BaseHTTPRequestHandler):
         elif effective_path == "/api/connect":
             try:
                 payload = self.read_json_body()
-                self.send_json({"ok": True, "message": connect_node(str(payload.get("id") or ""))})
+                exit_id = int(payload.get("exit_id", 0) or 0)
+                self.send_json({"ok": True, "message": connect_node(str(payload.get("id") or ""), exit_id)})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
         elif effective_path == "/api/test_node":
