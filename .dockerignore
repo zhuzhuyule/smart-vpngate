@@ -1,0 +1,16 @@
+.git
+.gitignore
+docs/
+tests/
+__pycache__/
+*.pyc
+vpngate_data/
+data/
+*.log
+*.deb
+*.build/
+*.dist/
+aimilivpn
+docker-compose*.yml
+Dockerfile
+README.md

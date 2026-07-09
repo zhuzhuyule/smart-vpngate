@@ -1,0 +1,33 @@
+# 桥接模式（默认）：启动时固定映射 N 个出口端口。
+#
+# 用法：
+#   1) 想要几个出口，就把 EXIT_COUNT 和 ports 里的端口段改成同一个数量（默认 5：7928-7932）。
+#   2) docker compose up -d --build
+#
+# 说明：
+#   - 容器内可用 EXIT_COUNT 个出口端口；在网页里把出口设成 3、4 等 ≤ EXIT_COUNT 的值都没问题
+#     （多出来的映射端口闲置无害）。若要用超过映射数量的出口，请改大下面两处或改用 host 模式。
+#   - 代理默认监听 :: —— 宿主机 127.0.0.1:<port> 与被映射的公网端口都能用。
+#   - 要对外提供代理请自行在云安全组放行 7928-7932 端口段，并给代理设置密码鉴权。
+services:
+  smart-vpngate:
+    build: .
+    image: smart-vpngate:latest
+    container_name: smart-vpngate
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    sysctls:
+      - net.ipv4.conf.all.rp_filter=2
+      - net.ipv4.conf.default.rp_filter=2
+    environment:
+      - EXIT_COUNT=5
+      - LOCAL_PROXY_HOST=::
+      - UI_HOST=::
+    ports:
+      - "8787:8787"              # 网页管理
+      - "7928-7932:7928-7932"    # 5 个出口代理端口（改数量时与上面 EXIT_COUNT 保持一致）
+    volumes:
+      - ./data:/app/vpngate_data

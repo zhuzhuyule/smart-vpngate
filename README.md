@@ -40,6 +40,25 @@ bash <(curl -Ls https://raw.githubusercontent.com/baoweise-bot/aimili-vpngate/ma
 ```
 > 💡 **小贴士**：部署完成后，终端会输出管理网页的专属链接（含随机安全后缀，如 `http://your_vps_ip:8787/u71e9IXp4TPx`）。在终端中输入 `ml` 命令可以随时调出交互式命令行管理菜单。
 
+#### 🐳 Docker 部署（多出口）
+
+镜像自包含（Python 标准库 + openvpn/iproute2/curl，无 pip 依赖），需要 `NET_ADMIN` 权限与 `/dev/net/tun` 设备。
+
+**桥接模式（启动时固定映射 N 个出口端口，默认 5 个）：**
+```bash
+# 想要几个出口，就把 docker-compose.yml 里的 EXIT_COUNT 和 ports 端口段改成同一数量（默认 5 → 7928-7932）
+docker compose up -d --build
+```
+之后在网页里把出口设成 3、4 等 ≤ EXIT_COUNT 的值都没问题（多出来的映射端口闲置无害）。
+
+**Host 网络模式（出口数量任意 1~10、即时生效，最省心）：**
+```bash
+docker compose -f docker-compose.host.yml up -d --build
+```
+
+- 代理默认监听 `::`（桥接）/ `127.0.0.1`（host）——**宿主机本机始终可用**；要对外提供代理，设 `LOCAL_PROXY_HOST=::` 并在安全组放行 `7928 ~ 7928+N-1` 端口段，同时建议给代理设置密码鉴权。
+- 数据（`ui_auth.json`/`nodes.json` 等）持久化在 `./data`。
+
 ---
 
 ### 💡 快速使用指南 (小白必看)
