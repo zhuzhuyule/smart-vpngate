@@ -4187,11 +4187,15 @@ function renderExitsPanel(){
       countryName = (connected && node) ? (translateCountry(node.country) || node.country || "") : "自动";
       modeLabel = "自动最佳";
     }
-    let sub = `出口 ${i} · ${esc(modeLabel)}`;
-    if(statusText) sub += ` · <span style="color:${dot};">${esc(statusText)}</span>`;
+    // 模式括注（+ 异常状态）
+    let modeSuffix = esc(modeLabel);
+    if(statusText) modeSuffix += ` · <span style="color:${dot};">${esc(statusText)}</span>`;
     // IP 类型（住宅/机房）
     const ipt = node ? node.ip_type : ((cfg.routing_ip_type && cfg.routing_ip_type !== "all") ? cfg.routing_ip_type : "");
     const iptLabel = ipt ? esc(translateIpType(ipt)) : `<span style="color:var(--text-secondary);">—</span>`;
+    // 物理位置
+    const loc = node ? (node.location || translateCountry(node.country) || node.country || "") : "";
+    const locVal = loc ? esc(loc) : `<span style="color:var(--text-secondary);">—</span>`;
     // 出口 IP + 端口
     const exitPort = (node && node.remote_port) ? `:${node.remote_port}` : "";
     const exitIpVal = (ex.proxy_ip && ex.proxy_ip !== "-")
@@ -4201,16 +4205,14 @@ function renderExitsPanel(){
     const latClass = ex.latency ? getLatencyClass(ex.latency) : "";
     const latVal = ex.latency ? `<span class="latency-val ${latClass}">${ex.latency} ms</span>` : `<span style="color:var(--text-secondary);">—</span>`;
     html += `<div style="display:flex;align-items:center;gap:20px;flex-wrap:wrap;background:var(--bg-surface);border:1px solid var(--border-color);border-left:3px solid ${dot};border-radius:12px;padding:14px 18px;">
-        <div style="display:flex;align-items:center;gap:12px;min-width:186px;">
+        <div style="display:flex;align-items:center;gap:11px;min-width:196px;">
           <span style="width:9px;height:9px;border-radius:50%;background:${dot};box-shadow:0 0 8px ${dot}88;flex:0 0 auto;"></span>
-          <span style="font-size:26px;line-height:1;flex:0 0 auto;">${bigFlag}</span>
-          <div style="min-width:0;">
-            <div style="font-size:16px;font-weight:700;color:var(--text-primary);line-height:1.25;">${esc(countryName)}</div>
-            <div style="font-size:11px;color:var(--text-secondary);margin-top:1px;">${sub}</div>
-          </div>
+          <span style="font-size:25px;line-height:1;flex:0 0 auto;">${bigFlag}</span>
+          <div style="font-size:16px;font-weight:700;color:var(--text-primary);white-space:nowrap;">${esc(countryName)} <span style="font-size:12px;font-weight:400;color:var(--text-secondary);">(${modeSuffix})</span></div>
         </div>
-        <div style="flex:1;display:grid;grid-template-columns:repeat(auto-fit,minmax(118px,1fr));gap:12px 22px;min-width:0;">
-          ${statBlock("代理端口", `<strong class="mono" style="font-size:15px;color:var(--primary);">${ex.proxy_port || ""}</strong>`)}
+        <div style="flex:1;display:grid;grid-template-columns:repeat(auto-fit,minmax(112px,1fr));gap:12px 22px;min-width:0;">
+          ${statBlock(`代理端口 ${i+1}`, `<strong class="mono" style="font-size:15px;color:var(--primary);">${ex.proxy_port || ""}</strong>`)}
+          ${statBlock("物理位置", locVal)}
           ${statBlock("出口 IP", exitIpVal)}
           ${statBlock("IP 类型", iptLabel)}
           ${statBlock("延迟", latVal)}
