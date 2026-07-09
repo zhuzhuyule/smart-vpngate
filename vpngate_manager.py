@@ -5417,6 +5417,30 @@ def active_node_pinger() -> None:
         time.sleep(10)
 
 
+def enforce_exits_after_config_change(ui_cfg: dict[str, Any]) -> None:
+    """配置变更后，逐出口检查其当前节点是否仍符合新配置，不符合则后台切换该出口。"""
+    exits = ui_cfg.get("exits", [])
+    nodes = read_nodes()
+    by_id = {str(n.get("id")): n for n in nodes}
+    for eid, ex in enumerate(exits):
+        node_id = get_exit_runtime(eid)["node_id"]
+        if not node_id:
+            continue
+        node = by_id.get(str(node_id))
+        violate = node is None
+        if node is not None:
+            if ex.get("mode") == "fixed_region" and ex.get("force_country") and not country_matches(node.get("country"), ex["force_country"]):
+                violate = True
+            it = ex.get("routing_ip_type", "all")
+            if it == "residential" and node.get("ip_type") not in ("residential", "mobile"):
+                violate = True
+            elif it == "hosting" and node.get("ip_type") != "hosting":
+                violate = True
+        if violate:
+            print(f"[路由规则] 出口 {eid} 当前节点 {node_id} 不符合新配置，正在后台切换……", flush=True)
+            threading.Thread(target=auto_switch_node, args=(eid,), daemon=True).start()
+
+
 class Handler(BaseHTTPRequestHandler):
     def get_secret_path(self) -> str:
         ui_cfg = load_ui_config()
@@ -5868,6 +5892,45 @@ class Handler(BaseHTTPRequestHandler):
                 else:
                     message = policy_message or "配置更新成功，已即时生效！"
                     self.send_json({"ok": True, "restart_needed": False, "message": message})
+            except Exception as exc:
+                self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
+            return
+
+        elif effective_path == "/api/update_exits":
+            try:
+                payload = self.read_json_body()
+                raw_exits = payload.get("exits")
+                if not isinstance(raw_exits, list) or not raw_exits:
+                    self.send_json({"ok": False, "error": "缺少 exits 配置"}, HTTPStatus.BAD_REQUEST)
+                    return
+                clean: list[dict[str, Any]] = []
+                for i, ex in enumerate(raw_exits):
+                    if not isinstance(ex, dict):
+                        self.send_json({"ok": False, "error": f"出口 {i} 配置格式错误"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    mode = str(ex.get("mode") or "auto").strip()
+                    if mode not in ("auto", "fixed_region"):
+                        self.send_json({"ok": False, "error": f"出口 {i} 路由模式无效"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    fc = str(ex.get("force_country") or "").strip()
+                    if mode == "fixed_region" and not fc:
+                        self.send_json({"ok": False, "error": f"出口 {i} 固定地区需选择一个国家"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    it = str(ex.get("routing_ip_type") or "all").strip()
+                    if it not in ("all", "residential", "hosting"):
+                        self.send_json({"ok": False, "error": f"出口 {i} IP 出站类型无效"}, HTTPStatus.BAD_REQUEST)
+                        return
+                    clean.append({"mode": mode, "force_country": fc, "routing_ip_type": it,
+                                  "region_fail_fallback": bool(ex.get("region_fail_fallback"))})
+
+                ui_cfg = load_ui_config()
+                ui_cfg["exits"] = clean
+                auth_file = DATA_DIR / "ui_auth.json"
+                with lock:
+                    DATA_DIR.mkdir(exist_ok=True, parents=True)
+                    write_json(auth_file, ui_cfg)
+                enforce_exits_after_config_change(ui_cfg)
+                self.send_json({"ok": True, "message": "多出口配置已更新，正在按新规则调整各出口……"})
             except Exception as exc:
                 self.send_json({"ok": False, "error": str(exc)}, HTTPStatus.INTERNAL_SERVER_ERROR)
             return
