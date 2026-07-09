@@ -5334,7 +5334,7 @@ def check_proxy_health(exit_id: int = 0) -> dict[str, Any]:
         return {"ok": False, "error": f"出口连接测试异常: {e}"}
 
 def background_proxy_checker() -> None:
-    global last_checker_heartbeat, is_connecting
+    global last_checker_heartbeat
     time.sleep(30)
     while True:
         last_checker_heartbeat = time.time()
@@ -5343,50 +5343,42 @@ def background_proxy_checker() -> None:
                 time.sleep(5)
                 continue
 
-            res = check_proxy_health()
-            if res["ok"]:
-                set_state(
-                    proxy_ok=True,
-                    proxy_ip=res["ip"],
-                    proxy_latency_ms=res["latency_ms"],
-                    proxy_error=""
-                )
-                log_to_json("INFO", "Proxy", f"代理可用，IP: {res['ip']}, 延迟: {res['latency_ms']} ms")
-            else:
-                error_msg = res.get("error", "未知错误")
-                if active_openvpn_node_id:
-                    print(f"[警告] {LOCAL_PROXY_PORT} 端口本地代理当前不可用！原因: {error_msg}", flush=True)
-                    log_to_json("WARNING", "Proxy", f"代理不可用: {error_msg}")
-                set_state(
-                    proxy_ok=False,
-                    proxy_ip="-",
-                    proxy_latency_ms=0,
-                    proxy_error=error_msg
-                )
+            ui_cfg = load_ui_config()
+            n_exits = len(ui_cfg.get("exits", []))
+            connection_enabled = ui_cfg.get("connection_enabled", True)
+            for eid in range(n_exits):
+                if get_exit_connecting(eid):
+                    continue
+                node_id = get_exit_runtime(eid)["node_id"]
+                if not node_id:
+                    continue
 
-                # If we intended to have an active VPN node but proxy failed, trigger auto-switch
-                if active_openvpn_node_id:
-                    ui_cfg = load_ui_config()
-                    routing_mode = ui_cfg.get("routing_mode", "auto")
-                    if routing_mode != "fixed_ip":
+                res = check_proxy_health(eid)
+                if res["ok"]:
+                    set_exit_state(eid, proxy_ok=True, proxy_ip=res["ip"], proxy_latency_ms=res["latency_ms"], proxy_error="")
+                    if eid == 0:
+                        set_state(proxy_ok=True, proxy_ip=res["ip"], proxy_latency_ms=res["latency_ms"], proxy_error="")
+                else:
+                    error_msg = res.get("error", "未知错误")
+                    set_exit_state(eid, proxy_ok=False, proxy_ip="-", proxy_latency_ms=0, proxy_error=error_msg)
+                    if eid == 0:
+                        set_state(proxy_ok=False, proxy_ip="-", proxy_latency_ms=0, proxy_error=error_msg)
+                    if connection_enabled:
+                        print(f"[警告] 出口 {eid} 本地代理当前不可用！原因：{error_msg}", flush=True)
+                        log_to_json("WARNING", "Proxy", f"出口 {eid} 代理不可用：{error_msg}")
+                        # 拉黑失效节点并释放占用，随后只切换这一个出口
                         with lock:
                             nodes = read_nodes()
-                            active_node = next((n for n in nodes if n.get("id") == active_openvpn_node_id), None)
+                            active_node = next((n for n in nodes if n.get("id") == node_id), None)
                             if active_node:
-                                mark_blacklisted(active_node, f"代理连通性检测失败: {error_msg}")
+                                mark_blacklisted(active_node, f"出口 {eid} 代理连通性检测失败：{error_msg}")
                                 active_node["probe_status"] = "unavailable"
                                 write_json(NODES_FILE, nodes)
-                        auto_switch_node()
-                    else:
-                        print(f"[代理守护线程] 固定 IP 模式下代理不可用，正在尝试重启连接同一节点: {active_openvpn_node_id}", flush=True)
-                        is_connecting = False
-                        try:
-                            connect_node(active_openvpn_node_id)
-                        except Exception as e:
-                            print(f"[代理守护线程] 重启固定节点失败: {e}", flush=True)
+                        set_node_active_exit(node_id, None)
+                        auto_switch_node(eid)
         except Exception as e:
-            print(f"[错误] 代理后台检测发生异常: {e}", flush=True)
-            log_to_json("ERROR", "Proxy", f"检测守护线程发生异常: {e}")
+            print(f"[错误] 代理后台检测发生异常：{e}", flush=True)
+            log_to_json("ERROR", "Proxy", f"检测守护线程发生异常：{e}")
         time.sleep(30)
 
 def active_node_pinger() -> None:
@@ -5394,27 +5386,32 @@ def active_node_pinger() -> None:
     while True:
         last_pinger_heartbeat = time.time()
         try:
-            if active_openvpn_running() and active_openvpn_node_id:
-                nodes = read_nodes()
-                node = next((n for n in nodes if n.get("id") == active_openvpn_node_id), None)
-                if node:
-                    ip = node.get("ip") or node.get("remote_host")
-                    port = parse_int(node.get("remote_port"))
-                    fallback = parse_int(node.get("ping"))
-                    if ip:
-                        latency = vpn_utils.ping_latency_ms(ip, port, fallback)
-                        if latency > 0:
-                            set_state(active_node_latency=f"{latency} ms")
-                        else:
-                            set_state(active_node_latency="检测超时")
-                    else:
-                        set_state(active_node_latency="检测超时")
+            ui_cfg = load_ui_config()
+            n_exits = len(ui_cfg.get("exits", []))
+            nodes = read_nodes()
+            by_id = {str(n.get("id")): n for n in nodes}
+            for eid in range(n_exits):
+                rt = get_exit_runtime(eid)
+                if exit_process_running(eid) and rt["node_id"]:
+                    node = by_id.get(str(rt["node_id"]))
+                    latency = 0
+                    if node:
+                        ip = node.get("ip") or node.get("remote_host")
+                        port = parse_int(node.get("remote_port"))
+                        fallback = parse_int(node.get("ping"))
+                        if ip:
+                            measured = vpn_utils.ping_latency_ms(ip, port, fallback)
+                            latency = measured if measured > 0 else 0
+                    rt["latency"] = latency
+                    set_exit_state(eid, latency=latency)
+                    if eid == 0:
+                        set_state(active_node_latency=f"{latency} ms" if latency > 0 else "检测超时")
+                elif get_exit_connecting(eid):
+                    if eid == 0:
+                        set_state(active_node_latency="测试中……")
                 else:
-                    set_state(active_node_latency="检测超时")
-            elif is_connecting:
-                set_state(active_node_latency="测试中...")
-            else:
-                set_state(active_node_latency="无活动连接")
+                    if eid == 0:
+                        set_state(active_node_latency="无活动连接")
         except Exception as e:
             print(f"[ERROR] active_node_pinger error: {e}", flush=True)
         time.sleep(10)
