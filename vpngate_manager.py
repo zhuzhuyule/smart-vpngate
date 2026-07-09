@@ -1434,10 +1434,14 @@ def select_exit_node(
     exit_cfg: dict[str, Any],
     exit_id: int,
     taken: dict[str, int],
+    avoid_countries: set[str] | None = None,
 ) -> dict[str, Any] | None:
-    """为某出口从共享池选一个"可用且未被别的出口占用"的最佳节点。
+    """为某出口从共享池选一个「可用且未被别的出口占用」的最佳节点。
     taken: node_id -> 占用它的 exit_id。
+    avoid_countries: 其他出口已用的国家（归一化名）。候选跨多个国家时（auto / 兜底），
+    优先选不在该集合内的国家，以充分利用多地区；软偏好，无此类节点时仍回退到已用国家。
     """
+    avoid = avoid_countries or set()
     free = [
         n for n in nodes
         if n.get("probe_status") == "available"
@@ -1445,7 +1449,11 @@ def select_exit_node(
     ]
     view = exit_routing_view(exit_cfg)
     candidates, _ = filter_switch_candidates(free, view)
-    candidates.sort(key=lambda n: (parse_int(n.get("latency_ms")) or 999999, -parse_int(n.get("score"))))
+    candidates.sort(key=lambda n: (
+        1 if normalized_country_name(n.get("country")) in avoid else 0,
+        parse_int(n.get("latency_ms")) or 999999,
+        -parse_int(n.get("score")),
+    ))
     return candidates[0] if candidates else None
 
 
@@ -1785,7 +1793,15 @@ def auto_switch_node(exit_id: int = 0, attempt: int = 0) -> None:
         taken = taken_exits_map(nodes)
         rt = get_exit_runtime(exit_id)
         taken.pop(str(rt["node_id"]), None)
-        next_node = select_exit_node(nodes, exit_cfg, exit_id, taken)
+        # 其他出口已用的国家：auto / 兜底 选点时优先避开，避免多个出口撞同一地区
+        by_id = {str(n.get("id")): n for n in nodes}
+        avoid_countries = set()
+        for nid, eid in taken.items():
+            if eid != exit_id:
+                nd = by_id.get(str(nid))
+                if nd:
+                    avoid_countries.add(normalized_country_name(nd.get("country")))
+        next_node = select_exit_node(nodes, exit_cfg, exit_id, taken, avoid_countries)
 
     if next_node:
         region_fallback_used = (
