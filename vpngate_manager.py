@@ -6109,10 +6109,34 @@ class Tee:
     def __getattr__(self, attr: str) -> Any:
         return getattr(self.stdout, attr)
 
+def cleanup_stale_exit_devices() -> None:
+    """启动时清理仅属于本程序前缀（svtun*/svtst*）的残留网卡与路由表，绝不触碰用户自己的 tun0。"""
+    try:
+        out = subprocess.run(["ip", "-o", "link"], capture_output=True, text=True, timeout=3).stdout
+    except Exception:
+        out = ""
+    for line in out.splitlines():
+        for pfx in (TUN_PREFIX, TEST_TUN_PREFIX):
+            if f" {pfx}" in line:
+                try:
+                    name = line.split(":", 1)[1].strip().split("@")[0].strip()
+                except Exception:
+                    continue
+                if name.startswith(pfx):
+                    subprocess.run(["ip", "link", "delete", name], capture_output=True, timeout=3)
+    for eid in range(DEFAULT_EXIT_COUNT + 8):
+        for _ in range(4):
+            r = subprocess.run(["ip", "rule", "del", "table", str(TABLE_BASE + eid)], capture_output=True, timeout=2)
+            if r.returncode != 0:
+                break
+        subprocess.run(["ip", "route", "flush", "table", str(TABLE_BASE + eid)], capture_output=True, timeout=2)
+
+
 def main() -> None:
     ensure_dirs()
     kill_existing_openvpn_processes()
-    
+    cleanup_stale_exit_devices()
+
     log_file = DATA_DIR / "vpngate.log"
     tee = Tee(str(log_file))
     sys.stdout = tee
@@ -6134,8 +6158,14 @@ def main() -> None:
             "blacklisted_nodes": 0,
         },
     )
-    threading.Thread(target=proxy_server.start_proxy_server, args=(LOCAL_PROXY_HOST, LOCAL_PROXY_PORT), daemon=True).start()
-    
+    _boot_cfg = load_ui_config()
+    _prefix = _boot_cfg.get("tun_prefix", TUN_PREFIX)
+    _n_exits = len(_boot_cfg.get("exits", []))
+    for _eid in range(_n_exits):
+        _res = exit_resources(_eid, _prefix)
+        threading.Thread(target=proxy_server.start_proxy_server, args=(LOCAL_PROXY_HOST, _res["proxy_port"], _res["tun_dev"]), daemon=True).start()
+        print(f"[网关] 出口 {_eid} 代理监听 {LOCAL_PROXY_HOST}:{_res['proxy_port']} → 网卡 {_res['tun_dev']}", flush=True)
+
     # Wait for the gateway to officially start
     print("[网关] 正在启动代理网关...", flush=True)
     gateway_ready = False
