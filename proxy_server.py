@@ -49,7 +49,25 @@ def parse_host_port(authority: str, default_port: int) -> tuple[str, int]:
         return host, parse_int(port_text) or default_port
     return authority, default_port
 
+# 运行时代理鉴权（网页保存后热生效，优先于环境变量）。
+# {"set": False} 表示网页从未配置过，回退到环境变量。
+_RUNTIME_CREDS: dict[str, Any] = {"set": False, "user": None, "pass": None}
+
+def set_proxy_credentials(user: str | None, password: str | None) -> None:
+    """由网页/初始化调用，运行时设置代理鉴权。用户名与密码同时为空表示禁用鉴权。"""
+    u = (user or "").strip()
+    p = password or ""
+    _RUNTIME_CREDS["set"] = True
+    _RUNTIME_CREDS["user"] = u or None
+    _RUNTIME_CREDS["pass"] = p or None
+
 def get_proxy_credentials() -> tuple[str | None, str | None]:
+    if _RUNTIME_CREDS["set"]:
+        user = _RUNTIME_CREDS["user"]
+        password = _RUNTIME_CREDS["pass"]
+        if not user and not password:
+            return None, None
+        return user or "", password or ""
     user = os.environ.get("LOCAL_PROXY_USER") or os.environ.get("LOCAL_PROXY_USERNAME")
     password = os.environ.get("LOCAL_PROXY_PASS") or os.environ.get("LOCAL_PROXY_PASSWORD")
     if user is None and password is None:

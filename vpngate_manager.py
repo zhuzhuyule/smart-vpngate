@@ -272,7 +272,7 @@ def generate_random_username() -> str:
                 return uname
 
 def default_exit_config() -> dict[str, Any]:
-    return {"mode": "auto", "force_country": "", "routing_ip_type": "all", "region_fail_fallback": False}
+    return {"mode": "auto", "force_country": "", "routing_ip_type": "all", "region_fail_fallback": False, "ip_type_fail_fallback": False}
 
 
 def migrate_legacy_exits(cfg: dict[str, Any], slots: int = DEFAULT_EXIT_COUNT) -> dict[str, Any]:
@@ -292,6 +292,7 @@ def migrate_legacy_exits(cfg: dict[str, Any], slots: int = DEFAULT_EXIT_COUNT) -
             "force_country": cfg.get("force_country", ""),
             "routing_ip_type": cfg.get("routing_ip_type", "all"),
             "region_fail_fallback": bool(cfg.get("region_fail_fallback", False)),
+            "ip_type_fail_fallback": bool(cfg.get("ip_type_fail_fallback", False)),
         }]
     normalized: list[dict[str, Any]] = []
     for i in range(slots):
@@ -302,6 +303,7 @@ def migrate_legacy_exits(cfg: dict[str, Any], slots: int = DEFAULT_EXIT_COUNT) -
         rit = src.get("routing_ip_type", "all")
         item["routing_ip_type"] = rit if rit in ("all", "residential", "hosting") else "all"
         item["region_fail_fallback"] = bool(src.get("region_fail_fallback", False))
+        item["ip_type_fail_fallback"] = bool(src.get("ip_type_fail_fallback", False))
         normalized.append(item)
     cfg["exits"] = normalized
     return cfg
@@ -388,6 +390,8 @@ try:
         UI_PORT = bounded_int(_init_cfg["port"], UI_PORT, 1, 65535)
     if "host" in _init_cfg:
         UI_HOST = _init_cfg["host"]
+    if "proxy_user" in _init_cfg or "proxy_pass" in _init_cfg:
+        proxy_server.set_proxy_credentials(_init_cfg.get("proxy_user", ""), _init_cfg.get("proxy_pass", ""))
 except Exception:
     pass
 
@@ -514,6 +518,8 @@ def get_state() -> dict[str, Any]:
     state["secret_path"] = ui_cfg.get("secret_path", "EJsW2EeBo9lY")
     state["password_set"] = bool(ui_cfg.get("password"))
     state["proxy_port"] = ui_cfg.get("proxy_port", 7928)
+    state["proxy_user"] = ui_cfg.get("proxy_user", "")
+    state["proxy_pass"] = ui_cfg.get("proxy_pass", "")
     state["routing_mode"] = ui_cfg.get("routing_mode", "auto")
     state["force_country"] = ui_cfg.get("force_country", "")
     state["routing_ip_type"] = ui_cfg.get("routing_ip_type", "all")
@@ -1406,19 +1412,44 @@ def locked_country_has_available_nodes(ui_cfg: dict[str, Any]) -> bool:
         for n in read_nodes()
     )
 
+def ip_type_fallback_enabled(ui_cfg: dict[str, Any]) -> bool:
+    return (
+        ui_cfg.get("routing_ip_type", "all") in ("residential", "hosting")
+        and bool(ui_cfg.get("ip_type_fail_fallback", False))
+    )
+
+def locked_ip_type_has_available_nodes(ui_cfg: dict[str, Any]) -> bool:
+    routing_ip_type = ui_cfg.get("routing_ip_type", "all")
+    if routing_ip_type not in ("residential", "hosting"):
+        return False
+    def matches(t: Any) -> bool:
+        return t in ("residential", "mobile") if routing_ip_type == "residential" else t == "hosting"
+    return any(
+        n.get("probe_status") == "available" and matches(n.get("ip_type"))
+        for n in read_nodes()
+    )
+
 def filter_switch_candidates(
     nodes: list[dict[str, Any]],
     ui_cfg: dict[str, Any],
     include_unknown_ip_type: bool = False,
 ) -> tuple[list[dict[str, Any]], bool]:
-    """按路由规则筛选可切换候选；固定地区无候选且允许兜底时，放宽到全部国家。
+    """按路由规则筛选可切换候选；无候选且开启相应兜底时，逐项放宽限制。
 
-    返回 (candidates, fallback_used)。兜底只放宽国家限制，IP 出站类型过滤仍然生效。
+    返回 (candidates, fallback_used)。区域兜底放宽国家限制；IP 类型兜底放宽 IP 出站类型过滤。
     """
     candidates = apply_routing_filters(nodes, ui_cfg, include_unknown_ip_type)
-    if not candidates and region_fallback_enabled(ui_cfg):
-        relaxed_cfg = dict(ui_cfg)
+    if candidates:
+        return candidates, False
+    relaxed_cfg = dict(ui_cfg)
+    relaxed = False
+    if region_fallback_enabled(ui_cfg):
         relaxed_cfg["routing_mode"] = "auto"
+        relaxed = True
+    if ip_type_fallback_enabled(ui_cfg):
+        relaxed_cfg["routing_ip_type"] = "all"
+        relaxed = True
+    if relaxed:
         candidates = apply_routing_filters(nodes, relaxed_cfg, include_unknown_ip_type)
         return candidates, bool(candidates)
     return candidates, False
@@ -1430,6 +1461,7 @@ def exit_routing_view(exit_cfg: dict[str, Any]) -> dict[str, Any]:
         "force_country": exit_cfg.get("force_country", ""),
         "routing_ip_type": exit_cfg.get("routing_ip_type", "all"),
         "region_fail_fallback": bool(exit_cfg.get("region_fail_fallback", False)),
+        "ip_type_fail_fallback": bool(exit_cfg.get("ip_type_fail_fallback", False)),
     }
 
 def select_exit_node(
@@ -1526,10 +1558,12 @@ def validate_node_allowed_by_routing(node: dict[str, Any], ui_cfg: dict[str, Any
 
     routing_ip_type = ui_cfg.get("routing_ip_type", "all")
     node_ip_type = node.get("ip_type")
-    if routing_ip_type == "residential" and node_ip_type not in ("residential", "mobile"):
-        raise RuntimeError("当前已锁定住宅 IP 出站，不能连接非住宅节点")
-    if routing_ip_type == "hosting" and node_ip_type != "hosting":
-        raise RuntimeError("当前已锁定机房 IP 出站，不能连接非机房节点")
+    # 开启 IP 类型降级、且锁定类型当前确无可用节点时，放行其他类型节点
+    if not (ip_type_fallback_enabled(ui_cfg) and not locked_ip_type_has_available_nodes(ui_cfg)):
+        if routing_ip_type == "residential" and node_ip_type not in ("residential", "mobile"):
+            raise RuntimeError("当前已锁定住宅 IP 出站，不能连接非住宅节点")
+        if routing_ip_type == "hosting" and node_ip_type != "hosting":
+            raise RuntimeError("当前已锁定机房 IP 出站，不能连接非机房节点")
 
 def enforce_active_node_allowed_by_routing(ui_cfg: dict[str, Any], reason: str = "路由规则已更新") -> str | None:
     active_id = active_openvpn_node_id
@@ -3777,6 +3811,18 @@ INDEX_HTML = r"""<!doctype html>
           <input type="number" id="net_proxy_port" class="input-field" required min="1024" max="65535" placeholder="7928">
         </div>
 
+        <div class="form-group" style="margin-bottom: 8px;">
+          <label class="form-label" for="net_proxy_user">代理鉴权用户名</label>
+          <input type="text" id="net_proxy_user" class="input-field" autocomplete="off" placeholder="留空 = 不需要鉴权（公开代理）">
+        </div>
+        <div class="form-group" style="margin-bottom: 6px;">
+          <label class="form-label" for="net_proxy_pass">代理鉴权密码</label>
+          <input type="text" id="net_proxy_pass" class="input-field" autocomplete="off" placeholder="留空 = 不需要鉴权">
+        </div>
+        <div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:4px;">
+          修改后即时生效；<strong>所有连接此代理的客户端（如中转机）需同步改成相同的用户名/密码</strong>，否则会被拒绝。用户名与密码同时留空则关闭鉴权。
+        </div>
+
         <div style="border-top: 1px dashed rgba(255,255,255,0.08); padding-top: 16px; margin-bottom: 16px;">
           <div class="form-group" style="margin-bottom: 16px;">
             <label class="form-label">IP 出站路由模式</label>
@@ -4371,6 +4417,7 @@ function exitRowHtml(i, ex){
   const fc = cfg.force_country || "";
   const it = cfg.routing_ip_type || "all";
   const fb = !!cfg.region_fail_fallback;
+  const ipfb = !!cfg.ip_type_fail_fallback;
   return `<div class="exit-row" data-idx="${i}" style="border:1px solid var(--border-color);border-radius:10px;padding:12px;margin-bottom:10px;background:rgba(255,255,255,0.02);">
       <div style="font-weight:600;margin-bottom:8px;color:var(--text-primary);">出口 ${i} · 端口 <span class="mono">:${ex.proxy_port || (7928 + i)}</span></div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
@@ -4393,6 +4440,9 @@ function exitRowHtml(i, ex){
         <label style="font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:8px;margin-top:22px;cursor:pointer;">
           <input type="checkbox" class="ex-fallback" ${fb ? "checked" : ""} style="width:15px;height:15px;accent-color:var(--primary);"> 该国无节点时允许跨国兜底
         </label>
+        <label style="font-size:12px;color:var(--text-secondary);display:flex;align-items:center;gap:8px;margin-top:22px;cursor:pointer;">
+          <input type="checkbox" class="ex-iptype-fallback" ${ipfb ? "checked" : ""} style="width:15px;height:15px;accent-color:var(--primary);"> 该类IP无节点时允许降级
+        </label>
       </div>
     </div>`;
 }
@@ -4412,6 +4462,7 @@ function gatherExitRows(){
       force_country: r.querySelector(".ex-country").value,
       routing_ip_type: r.querySelector(".ex-iptype").value,
       region_fail_fallback: r.querySelector(".ex-fallback").checked,
+      ip_type_fail_fallback: r.querySelector(".ex-iptype-fallback").checked,
     });
   });
   return out;
@@ -4421,7 +4472,7 @@ function rebuildExitRows(count, seed){
   const cur = seed || gatherExitRows();
   let html = "";
   for(let i=0;i<count;i++){
-    const cfg = cur[i] || {mode:"auto", force_country:"", routing_ip_type:"all", region_fail_fallback:false};
+    const cfg = cur[i] || {mode:"auto", force_country:"", routing_ip_type:"all", region_fail_fallback:false, ip_type_fail_fallback:false};
     const port = (state.exits && state.exits[i]) ? state.exits[i].proxy_port : (7928 + i);
     html += exitRowHtml(i, {config: cfg, proxy_port: port});
   }
@@ -4440,7 +4491,7 @@ function openExitsModal(){
   const exits = state.exits || [];
   const cnt = exits.length || (state.exit_count || 3);
   const ci = $("exits_count"); if(ci) ci.value = cnt;
-  rebuildExitRows(cnt, exits.map(ex => ex.config || {mode:"auto", force_country:"", routing_ip_type:"all", region_fail_fallback:false}));
+  rebuildExitRows(cnt, exits.map(ex => ex.config || {mode:"auto", force_country:"", routing_ip_type:"all", region_fail_fallback:false, ip_type_fail_fallback:false}));
   const dv = $("exits_diverse"); if(dv) dv.checked = !!state.prefer_diverse_regions;
   const msg = $("exits_save_msg"); if(msg) msg.style.display = "none";
   const dd = $("admin_dropdown"); if(dd) dd.style.display = "none";
@@ -4482,6 +4533,7 @@ async function saveExits(){
       force_country: fc,
       routing_ip_type: r.querySelector(".ex-iptype").value,
       region_fail_fallback: r.querySelector(".ex-fallback").checked,
+      ip_type_fail_fallback: r.querySelector(".ex-iptype-fallback").checked,
     });
   }
   const msg = $("exits_save_msg");
@@ -5334,6 +5386,8 @@ function openNetworkModal() {
   
   if (state) {
     $("net_proxy_port").value = state.proxy_port || 7928;
+    $("net_proxy_user").value = state.proxy_user || "";
+    $("net_proxy_pass").value = state.proxy_pass || "";
     const mode = state.routing_mode || "auto";
     const ipType = state.routing_ip_type || "all";
     
@@ -5400,7 +5454,9 @@ async function saveNetwork(e) {
         routing_mode: routingMode,
         force_country: forceCountry,
         routing_ip_type: routingIpType,
-        region_fail_fallback: $("net_region_fallback").checked
+        region_fail_fallback: $("net_region_fallback").checked,
+        proxy_user: $("net_proxy_user").value.trim(),
+        proxy_pass: $("net_proxy_pass").value
       })
     });
     
@@ -6324,6 +6380,12 @@ class Handler(BaseHTTPRequestHandler):
                 ui_cfg["routing_ip_type"] = routing_ip_type
                 if "region_fail_fallback" in payload:
                     ui_cfg["region_fail_fallback"] = bool(payload.get("region_fail_fallback"))
+                if "proxy_user" in payload or "proxy_pass" in payload:
+                    new_proxy_user = str(payload.get("proxy_user") or "").strip()
+                    new_proxy_pass = str(payload.get("proxy_pass") or "")
+                    ui_cfg["proxy_user"] = new_proxy_user
+                    ui_cfg["proxy_pass"] = new_proxy_pass
+                    proxy_server.set_proxy_credentials(new_proxy_user, new_proxy_pass)
                 if routing_mode == "favorites":
                     ui_cfg["fav_fail_fallback"] = False
                 if routing_mode == "fixed_ip":
@@ -6381,7 +6443,8 @@ class Handler(BaseHTTPRequestHandler):
                         self.send_json({"ok": False, "error": f"出口 {i} IP 出站类型无效"}, HTTPStatus.BAD_REQUEST)
                         return
                     clean.append({"mode": mode, "force_country": fc, "routing_ip_type": it,
-                                  "region_fail_fallback": bool(ex.get("region_fail_fallback"))})
+                                  "region_fail_fallback": bool(ex.get("region_fail_fallback")),
+                                  "ip_type_fail_fallback": bool(ex.get("ip_type_fail_fallback"))})
 
                 ui_cfg = load_ui_config()
                 old_count = bounded_int(ui_cfg.get("exit_count"), DEFAULT_EXIT_COUNT, 1, 10)
