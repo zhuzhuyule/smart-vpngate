@@ -77,6 +77,10 @@ class DualStackHTTPServer(ThreadingHTTPServer):
 
 import vpn_utils
 import proxy_server
+try:
+    import snapshot_utils
+except ImportError:  # 快照模块缺失时降级为不校验，不影响主流程
+    snapshot_utils = None
 
 def env_int(name: str, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
     raw = os.environ.get(name)
@@ -146,6 +150,21 @@ STATE_FILE = DATA_DIR / "state.json"
 AUTH_FILE = DATA_DIR / "vpngate_auth.txt"
 UPSTREAM_PROXY_AUTH_FILE = DATA_DIR / "upstream_proxy_auth.txt"
 BLACKLIST_FILE = DATA_DIR / "blacklist.json"
+
+# 节点源兜底链：官方 API(https → http) → 镜像(按顺序) → 本地缓存快照 → 仓库内置快照。
+# 镜像由本仓库的 Actions 定时抓取并发布到 GitHub Pages（见 .github/workflows/update-vpngate-mirror.yml）。
+# 可用 VPNGATE_MIRROR_URL_1 / VPNGATE_MIRROR_URL_2 覆盖，置空即停用对应镜像。
+MIRROR_URLS: list[str] = []
+for _env_name, _default in (
+    ("VPNGATE_MIRROR_URL_1", "https://zhuzhuyule.github.io/smart-vpngate/vpngate.csv"),
+    ("VPNGATE_MIRROR_URL_2", "https://baoweise-bot.github.io/aimili-vpngate/vpngate.csv"),
+):
+    _value = os.environ.get(_env_name, _default).strip()
+    if _value and _value not in MIRROR_URLS:
+        MIRROR_URLS.append(_value)
+API_CACHE_FILE = DATA_DIR / "api_snapshot.csv"
+API_CACHE_META_FILE = DATA_DIR / "api_snapshot.meta.json"
+BUNDLED_SNAPSHOT_FILE = ROOT_DIR / "mirror" / "vpngate.csv"
 
 lock = threading.RLock()
 maintenance_lock = threading.Lock()
@@ -807,6 +826,43 @@ def fetch_api_text(url: str | None = None, use_ssl_verify: bool = True) -> str:
         with urllib.request.urlopen(request, timeout=12) as response:
             return response.read().decode("utf-8", errors="replace")
 
+def read_snapshot_file(path: Path) -> str:
+    """读取本地快照文件（节点列表 CSV），带体积上限保护。"""
+    size = path.stat().st_size
+    max_bytes = getattr(snapshot_utils, "MAX_SNAPSHOT_BYTES", 12 * 1024 * 1024) if snapshot_utils else 12 * 1024 * 1024
+    if size <= 0 or size > max_bytes:
+        raise ValueError(f"本地快照大小无效: {size}")
+    return path.read_bytes().decode("utf-8", errors="strict")
+
+def cache_api_snapshot(text: str, source: str) -> None:
+    """把一次成功拉取的节点列表写入本地缓存，供后续网络不可用时兜底。"""
+    if not snapshot_utils:
+        return
+    try:
+        validated_rows = snapshot_utils.parse_and_validate_snapshot(text, max_rows=MAX_SCAN_ROWS)
+    except Exception as exc:
+        print(f"[快照缓存] 内容未通过校验，放弃缓存: {exc}", flush=True)
+        return
+    try:
+        encoded = text.encode("utf-8")
+        with lock:
+            DATA_DIR.mkdir(exist_ok=True, parents=True)
+            tmp = API_CACHE_FILE.with_suffix(API_CACHE_FILE.suffix + ".tmp")
+            tmp.write_bytes(encoded)
+            tmp.replace(API_CACHE_FILE)
+            write_json(
+                API_CACHE_META_FILE,
+                {
+                    "source": source,
+                    "cached_at": time.time(),
+                    "row_count": len(validated_rows),
+                    "byte_count": len(encoded),
+                    "sha256": hashlib.sha256(encoded).hexdigest(),
+                },
+            )
+    except Exception as exc:
+        print(f"[快照缓存] 写入失败: {exc}", flush=True)
+
 def parse_vpngate_rows(text: str) -> list[dict[str, str]]:
     lines = [line for line in text.splitlines() if line and not line.startswith("*")]
     if lines and lines[0].startswith("#"):
@@ -898,17 +954,23 @@ def fetch_candidates(target_countries: list[str] | None = None) -> list[dict[str
     has_cache = len(cached_nodes()) > 0
     max_attempts = 1 if has_cache else 2
     
-    # 尝试 URLs 队列: 1. HTTPS(验证证书) 2. HTTPS(不验证证书) 3. HTTP
+    # 尝试 URLs 队列: 1. 官方 HTTPS(验证证书) 2. 官方 HTTPS(不验证证书) 3. 官方 HTTP
+    #                 4~5. GitHub Pages 镜像（官方域名被墙/被污染时的兜底）
     attempts_targets = [
         (API_URL, True),
         (API_URL, False)
     ]
     if API_URL.startswith("https://"):
         attempts_targets.append((API_URL.replace("https://", "http://"), True))
-        
-    log_to_json("INFO", "Main", "开始拉取官方 API 节点列表...")
-    
+    for mirror_url in MIRROR_URLS:
+        attempts_targets.append((mirror_url, True))
+
+    log_to_json("INFO", "Main", "开始按官方 API、镜像、本地快照的顺序拉取节点列表...")
+
     last_err = None
+    last_ok_url = ""
+    last_api_text = ""
+    fallback_source = ""
     for url, verify_ssl in attempts_targets:
         for i in range(max_attempts):
             if i > 0:
@@ -918,6 +980,7 @@ def fetch_candidates(target_countries: list[str] | None = None) -> list[dict[str
                 print(f"[fetch_candidates] {msg}", flush=True)
                 log_to_json("INFO", "Main", msg)
                 api_text = fetch_api_text(url, verify_ssl)
+                last_api_text = api_text
                 rows = parse_vpngate_rows(api_text)
                 for row in rows[:MAX_SCAN_ROWS]:
                     ip = row.get("IP", "")
@@ -928,10 +991,14 @@ def fetch_candidates(target_countries: list[str] | None = None) -> list[dict[str
                         continue
                     try:
                         config_text = decode_config(encoded)
+                        # 安全校验：拒绝含 script-security / up / down 等可执行指令的配置，
+                        # 防止恶意节点利用 OpenVPN 配置在 VPS 上执行任意命令。
+                        if snapshot_utils:
+                            snapshot_utils.validate_openvpn_config(config_text)
                         node = row_to_node(row, config_text)
                     except Exception as row_exc:
-                        print(f"[fetch_candidates] 跳过损坏的节点配置记录: {row_exc}", flush=True)
-                        log_to_json("WARNING", "Main", f"跳过损坏的节点配置记录: {row_exc}")
+                        print(f"[fetch_candidates] 跳过损坏或不安全的节点配置记录: {row_exc}", flush=True)
+                        log_to_json("WARNING", "Main", f"跳过损坏或不安全的节点配置记录: {row_exc}")
                         continue
                     entry = blacklist.get(node["id"])
                     if entry and float(entry.get("until", 0) or 0) > time.time():
@@ -939,6 +1006,7 @@ def fetch_candidates(target_countries: list[str] | None = None) -> list[dict[str
                     candidates.append(node)
                     seen_ips.add(ip)
                 if candidates:
+                    last_ok_url = url
                     break
             except Exception as e:
                 last_err = e
@@ -946,7 +1014,45 @@ def fetch_candidates(target_countries: list[str] | None = None) -> list[dict[str
                 log_to_json("WARNING", "Main", f"拉取失败 (URL: {url}, 验证: {verify_ssl}): {e}")
         if candidates:
             break
-            
+
+    if candidates and last_ok_url.startswith("https://"):
+        # 只缓存经 HTTPS 取得的列表，避免明文 HTTP 结果污染缓存
+        cache_api_snapshot(last_api_text, last_ok_url)
+
+    if not candidates:
+        # 网络节点源全部失败 → 退回本地缓存快照 / 仓库内置快照
+        for source_name, path in (("local_cache", API_CACHE_FILE), ("bundled_initial", BUNDLED_SNAPSHOT_FILE)):
+            try:
+                if not path.exists():
+                    continue
+                api_text = read_snapshot_file(path)
+                rows = parse_vpngate_rows(api_text)
+                for row in rows[:MAX_SCAN_ROWS]:
+                    ip = row.get("IP", "")
+                    if not ip or ip in seen_ips:
+                        continue
+                    encoded = row.get("OpenVPN_ConfigData_Base64", "")
+                    if not encoded:
+                        continue
+                    try:
+                        config_text = decode_config(encoded)
+                        if snapshot_utils:
+                            snapshot_utils.validate_openvpn_config(config_text)
+                        node = row_to_node(row, config_text)
+                    except Exception as row_exc:
+                        continue
+                    entry = blacklist.get(node["id"])
+                    if entry and float(entry.get("until", 0) or 0) > time.time():
+                        continue
+                    candidates.append(node)
+                    seen_ips.add(ip)
+                if candidates:
+                    fallback_source = source_name
+                    print(f"[fetch_candidates] 网络节点源不可用，已载入 {source_name} 的 {len(candidates)} 个候选节点", flush=True)
+                    break
+            except Exception as exc:
+                print(f"[fetch_candidates] 载入 {source_name} 失败: {exc}", flush=True)
+
     if not candidates:
         err_code, diag_msg = vpn_utils.diagnose_api_failure(API_URL)
         full_err_msg = f"获取官方 API 节点最终失败: {last_err} | 诊断结果: {diag_msg}"
@@ -968,13 +1074,28 @@ def fetch_candidates(target_countries: list[str] | None = None) -> list[dict[str
     if wanted_countries:
         candidates = [n for n in candidates if (n.get("country_short") or "").upper() in wanted_countries]
 
-    set_state(
-        last_fetch_at=time.time(),
-        last_fetch_status="ok",
-        last_fetch_message=f"Fetched {len(candidates)} unique candidates (of {total_fetched} total) across multiple attempts.",
-        blacklisted_nodes=len(blacklist),
-    )
-    log_to_json("INFO", "Main", f"成功获取官方 API 节点，共 {total_fetched} 个候选节点，按国家范围筛选后剩 {len(candidates)} 个")
+    if fallback_source:
+        # 走的是本地快照兜底，状态不能谎报成实时拉取成功
+        set_state(
+            last_fetch_at=time.time(),
+            last_fetch_status="cached",
+            last_fetch_source=fallback_source,
+            last_fetch_message=(
+                f"网络节点源不可用，已载入{fallback_source}快照，"
+                f"共 {total_fetched} 个候选节点，按国家范围筛选后剩 {len(candidates)} 个。"
+            ),
+            blacklisted_nodes=len(blacklist),
+        )
+        log_to_json("WARNING", "Main", f"网络节点源不可用，已载入{fallback_source}快照，共 {total_fetched} 个候选节点")
+    else:
+        set_state(
+            last_fetch_at=time.time(),
+            last_fetch_status="ok",
+            last_fetch_source="official_api",
+            last_fetch_message=f"Fetched {len(candidates)} unique candidates (of {total_fetched} total) across multiple attempts.",
+            blacklisted_nodes=len(blacklist),
+        )
+        log_to_json("INFO", "Main", f"成功获取官方 API 节点，共 {total_fetched} 个候选节点，按国家范围筛选后剩 {len(candidates)} 个")
     return candidates
 
 def cached_nodes() -> list[dict[str, Any]]:

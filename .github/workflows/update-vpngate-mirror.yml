@@ -1,0 +1,45 @@
+name: Update VPNGate mirror
+
+# 定时抓取官方 VPNGate 节点列表，校验后发布为 GitHub Pages 上的静态 CSV。
+# 用途：官方域名被墙 / DNS 被污染时，VPS 仍能从这个镜像拉到节点列表。
+on:
+  schedule:
+    # 避开整点和整刻的调度高峰，GitHub 在忙时会延迟定时任务
+    - cron: "7,22,37,52 * * * *"
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/update-vpngate-mirror.yml"
+      - "scripts/build_vpngate_mirror.py"
+      - "snapshot_utils.py"
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: vpngate-pages-mirror
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Fetch and validate VPNGate snapshot
+        run: python scripts/build_vpngate_mirror.py --output-dir _site
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: _site
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5

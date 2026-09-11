@@ -1152,6 +1152,22 @@ if [ -d "/proc/sys/net/ipv4/conf" ]; then
     done
 fi
 
+# 升级重启前先清掉上一进程残留的节点 ID，否则安装脚本会把旧状态误判成"新连接已就绪"。
+if [ -f "${INSTALL_DIR}/vpngate_data/state.json" ]; then
+    python3 - "${INSTALL_DIR}/vpngate_data/state.json" <<'PY' 2>/dev/null || true
+import json
+import sys
+from pathlib import Path
+
+state_path = Path(sys.argv[1])
+state = json.loads(state_path.read_text(encoding="utf-8"))
+state["active_openvpn_node_id"] = ""
+state["is_connecting"] = True
+state["last_check_message"] = "服务正在重启并重新建立加密通道..."
+state_path.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+PY
+fi
+
 echo -e "\n正在启动 Smart VPNGate 服务并初始化网络..."
 if command -v systemctl >/dev/null 2>&1; then
     systemctl restart smart-vpngate.service || true
@@ -1170,7 +1186,9 @@ for i in {1..90}; do
         CUR_MSG=$(python3 -c "import json; print(json.load(open('${INSTALL_DIR}/vpngate_data/state.json')).get('last_check_message', ''))" 2>/dev/null || echo "")
         
         if [ "$IS_CONN" = "False" ] || [ "$IS_CONN" = "false" ]; then
-            if [ -n "$ACTIVE_ID" ]; then
+            # 多出口用的是 svtun0/svtun1/... 而不是 tun0，且必须真的存在 openvpn 进程才算就绪，
+            # 否则 state.json 里残留的旧节点 ID 会让安装脚本误报成功。
+            if [ -n "$ACTIVE_ID" ] && ip link show dev "svtun0" >/dev/null 2>&1 && pidof openvpn >/dev/null 2>&1; then
                 echo -e "  -> ${GREEN}[已就绪]${PLAIN} 首次节点连接成功，活动节点: ${GREEN}$ACTIVE_ID${PLAIN}"
                 break
             else
