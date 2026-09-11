@@ -73,3 +73,11 @@ tests/**/__pycache__/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# ---- 本地工具目录（含会话/记忆，绝不上传）----
+.omo/
+.workbuddy-ai/
+.codegraph/
+
+# ---- 服务器运维归档：已迁至 vps-ops 私有仓，本仓不保留 ----
+docs/migration-context-*.md
