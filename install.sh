@@ -43,13 +43,13 @@ case "$OS_TYPE" in
 esac
 
 echo -e "${BLUE}==========================================================${PLAIN}"
-echo -e "${BLUE}        欢迎使用 AimiliVPN 一键源码部署与管理脚本${PLAIN}"
+echo -e "${BLUE}        欢迎使用 Smart VPNGate 一键源码部署与管理脚本${PLAIN}"
 echo -e "${BLUE}==========================================================${PLAIN}"
 
 # 3. Configure GitHub Repository URL
-# Default to the official repository (baoweise-bot/aimili-vpngate)
-DEFAULT_USER="baoweise-bot"
-DEFAULT_REPO="aimili-vpngate"
+# Default to the official repository (zhuzhuyule/smart-vpngate)
+DEFAULT_USER="zhuzhuyule"
+DEFAULT_REPO="smart-vpngate"
 
 # Allow custom repository override via command line arguments
 GITHUB_USER="${1:-${DEFAULT_USER}}"
@@ -81,13 +81,62 @@ elif [ "$PKG_MGR" = "dnf" ] || [ "$PKG_MGR" = "yum" ]; then
 fi
 
 # 4. Clone or pull the repository
-INSTALL_DIR="/opt/aimilivpn"
+INSTALL_DIR="/opt/smart-vpngate"
 # 默认部署分支（在 bate 分支设为 bate；在 main 分支设为 main）
 DEFAULT_DEPLOY_BRANCH="main"
 
+# 3.5 Migrate a legacy installation (old project name) to the current layout.
+# Old name: install dir /opt/aimilivpn, systemd unit aimilivpn.service
+LEGACY_INSTALL_DIR="/opt/aimilivpn"
+LEGACY_SERVICE="aimilivpn"
+LEGACY_MIGRATED=0
+if [ -d "$LEGACY_INSTALL_DIR" ] && [ ! -d "$INSTALL_DIR" ]; then
+    echo -e "\n${YELLOW}检测到旧版安装目录 ${LEGACY_INSTALL_DIR}，正在迁移到 ${INSTALL_DIR} ...${PLAIN}"
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl stop "${LEGACY_SERVICE}.service" 2>/dev/null || true
+        systemctl disable "${LEGACY_SERVICE}.service" 2>/dev/null || true
+    elif command -v rc-service >/dev/null 2>&1; then
+        rc-service "${LEGACY_SERVICE}" stop 2>/dev/null || true
+        rc-update del "${LEGACY_SERVICE}" default 2>/dev/null || true
+    fi
+    mv "$LEGACY_INSTALL_DIR" "$INSTALL_DIR"
+    echo -e "  -> 目录已迁移: ${LEGACY_INSTALL_DIR} -> ${INSTALL_DIR}"
+    # The migrated .git still points at the old upstream repo; repoint it so the
+    # update step below does not silently reset our fork back to upstream code.
+    (cd "$INSTALL_DIR" && git remote set-url origin "$GITHUB_URL" 2>/dev/null || true)
+    echo -e "  -> 已重指向 origin: ${GITHUB_URL}"
+    LEGACY_MIGRATED=1
+fi
+
+# Always purge leftover legacy unit / env / sysctl files, even if the directory
+# was already moved by hand. Custom unit overrides are carried over first.
+if [ -f "/etc/default/aimilivpn" ] && [ ! -f "/etc/default/smart-vpngate" ]; then
+    mv "/etc/default/aimilivpn" "/etc/default/smart-vpngate"
+    echo -e "  -> 已迁移环境文件: /etc/default/aimilivpn -> /etc/default/smart-vpngate"
+fi
+if [ -d "/etc/systemd/system/aimilivpn.service.d" ]; then
+    mkdir -p "/etc/systemd/system/smart-vpngate.service.d"
+    for _f in /etc/systemd/system/aimilivpn.service.d/*; do
+        [ -e "$_f" ] || continue
+        _base=$(basename "$_f")
+        if [ ! -e "/etc/systemd/system/smart-vpngate.service.d/${_base}" ]; then
+            mv "$_f" "/etc/systemd/system/smart-vpngate.service.d/${_base}"
+        fi
+    done
+    rm -rf "/etc/systemd/system/aimilivpn.service.d"
+    echo -e "  -> 已迁移 systemd override: aimilivpn.service.d -> smart-vpngate.service.d"
+fi
+rm -f "/lib/systemd/system/aimilivpn.service" "/usr/lib/systemd/system/aimilivpn.service" "/etc/init.d/aimilivpn" "/etc/sysctl.d/99-aimilivpn.conf"
+if command -v systemctl >/dev/null 2>&1; then
+    systemctl daemon-reload 2>/dev/null || true
+fi
+
 # 自动检测本地已安装版本当前所在的分支
 CURRENT_BRANCH=""
-if [ -d "${INSTALL_DIR}/.git" ]; then
+if [ "${LEGACY_MIGRATED}" = "1" ]; then
+    # 刚从旧版迁移过来的仓库分支不可信（可能指向旧上游的 bate 等分支），回到默认分支
+    CURRENT_BRANCH=""
+elif [ -d "${INSTALL_DIR}/.git" ]; then
     CURRENT_BRANCH=$(cd "${INSTALL_DIR}" && git rev-parse --abbrev-ref HEAD 2>/dev/null)
 fi
 DEPLOY_BRANCH="${CURRENT_BRANCH:-$DEFAULT_DEPLOY_BRANCH}"
@@ -132,10 +181,10 @@ fi
 # 5. Configure Service
 echo -e "\n${YELLOW}[3/4] 正在配置系统服务...${PLAIN}"
 if command -v systemctl >/dev/null 2>&1; then
-    echo -e "  -> 检测到 systemd，正在创建服务配置 /lib/systemd/system/aimilivpn.service ..."
-    cat > /lib/systemd/system/aimilivpn.service <<EOF
+    echo -e "  -> 检测到 systemd，正在创建服务配置 /lib/systemd/system/smart-vpngate.service ..."
+    cat > /lib/systemd/system/smart-vpngate.service <<EOF
 [Unit]
-Description=AimiliVPN OpenVPN Manager with HTTP/SOCKS5 Proxy
+Description=Smart VPNGate OpenVPN Manager with HTTP/SOCKS5 Proxy
 After=network.target
 
 [Service]
@@ -144,40 +193,40 @@ WorkingDirectory=${INSTALL_DIR}
 ExecStart=/usr/bin/python3 vpngate_manager.py
 Restart=always
 RestartSec=5
-EnvironmentFile=-/etc/default/aimilivpn
+EnvironmentFile=-/etc/default/smart-vpngate
 
 [Install]
 WantedBy=multi-user.target
 EOF
     systemctl daemon-reload
-    systemctl enable aimilivpn.service
+    systemctl enable smart-vpngate.service
 elif command -v rc-service >/dev/null 2>&1; then
-    echo -e "  -> 检测到 OpenRC，正在创建服务配置 /etc/init.d/aimilivpn ..."
-    cat > /etc/init.d/aimilivpn <<EOF
+    echo -e "  -> 检测到 OpenRC，正在创建服务配置 /etc/init.d/smart-vpngate ..."
+    cat > /etc/init.d/smart-vpngate <<EOF
 #!/sbin/openrc-run
 
-description="AimiliVPN OpenVPN Manager with HTTP/SOCKS5 Proxy"
+description="Smart VPNGate OpenVPN Manager with HTTP/SOCKS5 Proxy"
 command="/usr/bin/python3"
 command_args="${INSTALL_DIR}/vpngate_manager.py"
 command_background="yes"
 directory="${INSTALL_DIR}"
-pidfile="/run/aimilivpn.pid"
+pidfile="/run/smart-vpngate.pid"
 
 depend() {
     need net
     after firewall
 }
 EOF
-    chmod +x /etc/init.d/aimilivpn
-    rc-update add aimilivpn default
+    chmod +x /etc/init.d/smart-vpngate
+    rc-update add smart-vpngate default
 else
     echo -e "${YELLOW}警告: 未能检测到 systemd 或 OpenRC，请手动管理服务。${PLAIN}"
 fi
 
-# 6. Configure global command shortcut "ml"
-echo -e "\n${YELLOW}[4/4] 正在创建全局命令快捷接口 'ml'...${PLAIN}"
-echo -e "  -> 正在写入管理脚本 /usr/bin/ml ..."
-cat > /usr/bin/ml <<'EOF'
+# 6. Configure global command shortcut "sv" (legacy "ml" kept as an alias)
+echo -e "\n${YELLOW}[4/4] 正在创建全局命令快捷接口 'sv'...${PLAIN}"
+echo -e "  -> 正在写入管理脚本 /usr/bin/sv ..."
+cat > /usr/bin/sv <<'EOF'
 #!/usr/bin/env python3
 import sys
 import os
@@ -188,8 +237,8 @@ import tty
 import termios
 import shutil
 
-INSTALL_DIR = "/opt/aimilivpn"
-LOG_FILE = "/opt/aimilivpn/vpngate_data/vpngate.log"
+INSTALL_DIR = "/opt/smart-vpngate"
+LOG_FILE = "/opt/smart-vpngate/vpngate_data/vpngate.log"
 
 def generate_random_password():
     import random
@@ -207,7 +256,7 @@ def generate_random_suffix():
 
 def load_ui_cfg():
     import json
-    path = "/opt/aimilivpn/vpngate_data/ui_auth.json"
+    path = "/opt/smart-vpngate/vpngate_data/ui_auth.json"
     cfg = {"host": "::", "port": 8787, "secret_path": "EJsW2EeBo9lY", "password": ""}
     if os.path.exists(path):
         try:
@@ -221,7 +270,7 @@ def load_ui_cfg():
 
 def save_ui_cfg(cfg):
     import json
-    path = "/opt/aimilivpn/vpngate_data/ui_auth.json"
+    path = "/opt/smart-vpngate/vpngate_data/ui_auth.json"
     os.makedirs(os.path.dirname(path), exist_ok=True)
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -232,7 +281,7 @@ def save_ui_cfg(cfg):
 
 def load_state():
     import json
-    path = "/opt/aimilivpn/vpngate_data/state.json"
+    path = "/opt/smart-vpngate/vpngate_data/state.json"
     state = {"active_openvpn_node_id": "", "last_check_message": "", "is_connecting": False}
     if os.path.exists(path):
         try:
@@ -246,7 +295,7 @@ def load_state():
 
 def get_active_node_info():
     import json
-    path = "/opt/aimilivpn/vpngate_data/nodes.json"
+    path = "/opt/smart-vpngate/vpngate_data/nodes.json"
     state = load_state()
     active_id = state.get("active_openvpn_node_id")
     if not active_id:
@@ -286,7 +335,7 @@ def ping_ip(ip):
         return "无法连接"
 
 def get_public_ip():
-    path = "/opt/aimilivpn/vpngate_data/public_ip.txt"
+    path = "/opt/smart-vpngate/vpngate_data/public_ip.txt"
     if os.path.exists(path):
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -326,7 +375,7 @@ def check_port_listening(port):
             pass
     return False
 
-def get_service_pid(service_name="aimilivpn.service"):
+def get_service_pid(service_name="smart-vpngate.service"):
     try:
         for pid_dir in os.listdir('/proc'):
             if pid_dir.isdigit():
@@ -341,7 +390,7 @@ def get_service_pid(service_name="aimilivpn.service"):
         pass
     return None
 
-def check_service_active(service_name="aimilivpn.service"):
+def check_service_active(service_name="smart-vpngate.service"):
     return get_service_pid(service_name) is not None
 
 def check_openvpn_process():
@@ -351,7 +400,7 @@ def check_openvpn_process():
                 try:
                     with open(os.path.join('/proc', pid_dir, 'cmdline'), 'r') as f:
                         cmd = f.read().replace('\x00', ' ')
-                        if 'openvpn' in cmd and ('/opt/aimilivpn/vpngate_data' in cmd or '/opt/aimilivpn/vpngate_data/configs' in cmd):
+                        if 'openvpn' in cmd and ('/opt/smart-vpngate/vpngate_data' in cmd or '/opt/smart-vpngate/vpngate_data/configs' in cmd):
                             return True
                 except Exception:
                     continue
@@ -389,9 +438,9 @@ def print_status():
     is_connecting = state.get("is_connecting", False)
     
     gateway_ok = check_port_listening(proxy_port)
-    service_ok = check_service_active("aimilivpn.service")
+    service_ok = check_service_active("smart-vpngate.service")
     openvpn_ok = check_openvpn_process()
-    pid = get_service_pid("aimilivpn.service")
+    pid = get_service_pid("smart-vpngate.service")
     
     active_ip, active_loc = get_active_node_info()
     latency = state.get("active_node_latency", "测试中...") if active_ip else "无活动连接"
@@ -412,7 +461,7 @@ def print_status():
         openvpn_status = f"{green}[已连接]{reset}" if openvpn_ok else f"{red}[未连接]{reset}"
     
     print_line("=======================================================")
-    print_line(f"               {bold}AimiliVPN 管理终端 v2.0{reset}                  ")
+    print_line(f"               {bold}Smart VPNGate 管理终端 v2.0{reset}                  ")
     print_line("=======================================================")
     print_line("【核心服务状态】")
     print_line(format_line(f"代理网关 (Port {proxy_port})", gateway_status))
@@ -480,32 +529,32 @@ def print_status():
 
 def run_service_cmd(cmd):
     if shutil.which("systemctl"):
-        subprocess.run(["systemctl", cmd, "aimilivpn.service"])
+        subprocess.run(["systemctl", cmd, "smart-vpngate.service"])
     elif shutil.which("rc-service"):
-        subprocess.run(["rc-service", "aimilivpn", cmd])
+        subprocess.run(["rc-service", "smart-vpngate", cmd])
     else:
         print("未检测到支持的服务管理器 (systemd/OpenRC)")
 
 def start_service():
-    print("正在启动 AimiliVPN 服务...", flush=True)
+    print("正在启动 Smart VPNGate 服务...", flush=True)
     run_service_cmd("start")
     print("已发送启动指令。")
     time.sleep(1)
 
 def stop_service():
-    print("正在停止 AimiliVPN 服务...", flush=True)
+    print("正在停止 Smart VPNGate 服务...", flush=True)
     run_service_cmd("stop")
     print("已发送停止指令。")
     time.sleep(1)
 
 def restart_service():
-    print("正在重启 AimiliVPN 服务...", flush=True)
+    print("正在重启 Smart VPNGate 服务...", flush=True)
     run_service_cmd("restart")
     print("已发送重启指令。")
     time.sleep(1)
 
 def show_logs():
-    print("正在查看 AimiliVPN 日志 (按 Ctrl+C 退出)...", flush=True)
+    print("正在查看 Smart VPNGate 日志 (按 Ctrl+C 退出)...", flush=True)
     if os.path.exists(LOG_FILE):
         try:
             subprocess.run(["tail", "-f", "-n", "50", LOG_FILE])
@@ -576,28 +625,29 @@ def update_service():
         time.sleep(2)
 
 def uninstall_service():
-    confirm = input("确定要完全卸载 AimiliVPN 吗？(y/N): ")
+    confirm = input("确定要完全卸载 Smart VPNGate 吗？(y/N): ")
     if confirm.lower() == 'y':
-        print("正在完全卸载 AimiliVPN...", flush=True)
+        print("正在完全卸载 Smart VPNGate...", flush=True)
         stop_service()
         if shutil.which("systemctl"):
-            subprocess.run(["systemctl", "disable", "aimilivpn.service"])
+            subprocess.run(["systemctl", "disable", "smart-vpngate.service"])
             try:
-                os.unlink("/lib/systemd/system/aimilivpn.service")
+                os.unlink("/lib/systemd/system/smart-vpngate.service")
             except Exception:
                 pass
         elif shutil.which("rc-service"):
-            subprocess.run(["rc-update", "del", "aimilivpn"])
+            subprocess.run(["rc-update", "del", "smart-vpngate"])
             try:
-                os.unlink("/etc/init.d/aimilivpn")
+                os.unlink("/etc/init.d/smart-vpngate")
             except Exception:
                 pass
-        try:
-            os.unlink("/usr/bin/ml")
-        except Exception:
-            pass
+        for _legacy_cmd in ("/usr/bin/sv", "/usr/bin/ml"):
+            try:
+                os.unlink(_legacy_cmd)
+            except Exception:
+                pass
         subprocess.run(["rm", "-rf", INSTALL_DIR])
-        print("AimiliVPN 已卸载！")
+        print("Smart VPNGate 已卸载！")
         sys.exit(0)
     else:
         print("已取消卸载。")
@@ -606,7 +656,7 @@ def uninstall_service():
 def ask_restart():
     ans = input("配置已保存。是否立即重启服务生效？(Y/n): ").strip().lower()
     if ans in ('', 'y', 'yes'):
-        print("正在重启 AimiliVPN 服务...", flush=True)
+        print("正在重启 Smart VPNGate 服务...", flush=True)
         restart_service()
         print("服务已重启。")
         time.sleep(1.5)
@@ -825,9 +875,9 @@ def get_status_state():
         state.get("proxy_latency_ms", 0),
         state.get("proxy_ok", False),
         check_port_listening(proxy_port),
-        check_service_active("aimilivpn.service"),
+        check_service_active("smart-vpngate.service"),
         check_openvpn_process(),
-        get_service_pid("aimilivpn.service")
+        get_service_pid("smart-vpngate.service")
     )
 
 def main():
@@ -879,9 +929,9 @@ def main():
         
     options = {
         '1': ("启动服务 (ml start)", start_service),
-        '2': ("停止服务 (ml stop)", stop_service),
-        '3': ("重启服务 (ml restart)", restart_service),
-        '4': ("日志监控 (ml logs)", show_logs),
+        '2': ("停止服务 (sv stop)", stop_service),
+        '3': ("重启服务 (sv restart)", restart_service),
+        '4': ("日志监控 (sv logs)", show_logs),
         '5': ("网页配置 (ml web)", configure_web),
         '6': ("端口配置 (ml port)", configure_port),
         '7': ("账号密码 (ml password)", configure_credentials),
@@ -959,7 +1009,9 @@ def main():
 if __name__ == "__main__":
     main()
 EOF
-chmod +x /usr/bin/ml
+chmod +x /usr/bin/sv
+# Keep the historical "ml" command working so existing muscle memory / scripts keep working
+ln -sf /usr/bin/sv /usr/bin/ml
 
 # 7. Configure Custom parameters (First-time installation check)
 AUTH_FILE="${INSTALL_DIR}/vpngate_data/ui_auth.json"
@@ -1073,11 +1125,11 @@ fi
 # 8.5 Optimize network parameters (rp_filter for policy routing)
 echo -e "\n正在优化网络参数 (配置反向路径过滤 rp_filter=2 以支持策略路由)..."
 if [ -d "/etc/sysctl.d" ]; then
-    cat > /etc/sysctl.d/99-aimilivpn.conf <<EOF
+    cat > /etc/sysctl.d/99-smart-vpngate.conf <<EOF
 net.ipv4.conf.all.rp_filter = 2
 net.ipv4.conf.default.rp_filter = 2
 EOF
-    sysctl -p /etc/sysctl.d/99-aimilivpn.conf >/dev/null 2>&1 || true
+    sysctl -p /etc/sysctl.d/99-smart-vpngate.conf >/dev/null 2>&1 || true
 else
     # Fallback to appending to /etc/sysctl.conf
     if ! grep -q "net.ipv4.conf.all.rp_filter" /etc/sysctl.conf; then
@@ -1100,15 +1152,15 @@ if [ -d "/proc/sys/net/ipv4/conf" ]; then
     done
 fi
 
-echo -e "\n正在启动 AimiliVPN 服务并初始化网络..."
+echo -e "\n正在启动 Smart VPNGate 服务并初始化网络..."
 if command -v systemctl >/dev/null 2>&1; then
-    systemctl restart aimilivpn.service || true
+    systemctl restart smart-vpngate.service || true
 elif command -v rc-service >/dev/null 2>&1; then
-    rc-service aimilivpn restart || true
+    rc-service smart-vpngate restart || true
 fi
 
 # Wait and poll for node loading and active connection
-echo -e "\n正在等待 AimiliVPN 首次获取节点并建立加密通道 (此过程可能需要 5-30 秒)..."
+echo -e "\n正在等待 Smart VPNGate 首次获取节点并建立加密通道 (此过程可能需要 5-30 秒)..."
 ACTIVE_ID=""
 LAST_MSG=""
 for i in {1..90}; do
@@ -1168,7 +1220,7 @@ echo -e "正在获取 VPS 公网 IPv6..."
 PUBLIC_IPV6=$(curl -6 -s --max-time 3 https://api.ipify.org || curl -6 -s --max-time 3 https://ifconfig.me || curl -6 -s --max-time 3 icanhazip.com || echo "")
 
 echo -e "\n${GREEN}==========================================================${PLAIN}"
-echo -e "${GREEN}             AimiliVPN 源码一键部署已完成！${PLAIN}"
+echo -e "${GREEN}             Smart VPNGate 源码一键部署已完成！${PLAIN}"
 echo -e "${GREEN}==========================================================${PLAIN}"
 echo -e "  * 网页控制面板:  ${BLUE}http://${PUBLIC_IP}:${UI_PORT}/${SECRET_PATH}/${PLAIN}"
 if [ -n "$PUBLIC_IPV6" ]; then
@@ -1184,9 +1236,9 @@ else
     echo -e "  * HTTP/SOCKS5 代理端口:  ${BLUE}http://127.0.0.1:${PROXY_PORT}/${PLAIN}  或  ${BLUE}http://[::1]:${PROXY_PORT}/${PLAIN}"
 fi
 echo -e " --------------------------------------------------------"
-echo -e "  * 快速状态指令:   ${YELLOW}ml status${PLAIN}  或  ${YELLOW}ml${PLAIN}"
-echo -e "  * 查看实时日志:   ${YELLOW}ml logs${PLAIN}"
-echo -e "  * 停止服务:       ${YELLOW}ml stop${PLAIN}"
-echo -e "  * 重启服务:       ${YELLOW}ml restart${PLAIN}"
+echo -e "  * 快速状态指令:   ${YELLOW}sv status${PLAIN}  或  ${YELLOW}sv${PLAIN}"
+echo -e "  * 查看实时日志:   ${YELLOW}sv logs${PLAIN}"
+echo -e "  * 停止服务:       ${YELLOW}sv stop${PLAIN}"
+echo -e "  * 重启服务:       ${YELLOW}sv restart${PLAIN}"
 echo -e "=========================================================="
 echo

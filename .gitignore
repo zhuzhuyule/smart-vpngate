@@ -1,5 +1,5 @@
 # ============================================
-#  AimiliVPN .gitignore
+#  Smart VPNGate .gitignore
 # ============================================
 
 # ---- Nuitka 编译产物 ----
@@ -8,10 +8,12 @@ vpngate_manager.dist/
 *.build/
 *.dist/
 aimilivpn
+smart-vpngate
 
 # ---- Debian 打包产物 ----
 *.deb
 aimilivpn_*
+smart-vpngate_*
 
 # ---- Python 缓存 ----
 __pycache__/
@@ -53,6 +55,7 @@ logs/
 AI开发指令.md
 功能文档.md
 AimiliVPN_Analysis_ZH.md
+Smart_VPNGate_Analysis_ZH.md
 
 # ---- 临时和测试文件 ----
 scratch/
