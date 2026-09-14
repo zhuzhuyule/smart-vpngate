@@ -157,7 +157,7 @@ BLACKLIST_FILE = DATA_DIR / "blacklist.json"
 MIRROR_URLS: list[str] = []
 for _env_name, _default in (
     ("VPNGATE_MIRROR_URL_1", "https://zhuzhuyule.github.io/smart-vpngate/vpngate.csv"),
-    ("VPNGATE_MIRROR_URL_2", "https://baoweise-bot.github.io/aimili-vpngate/vpngate.csv"),
+    ("VPNGATE_MIRROR_URL_2", ""),
 ):
     _value = os.environ.get(_env_name, _default).strip()
     if _value and _value not in MIRROR_URLS:
