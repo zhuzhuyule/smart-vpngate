@@ -37,7 +37,7 @@ Transform the project from a simple VPNGate client into a Smart Exit Manager.
    - WARP/WireGuard later
 
 ## Design Notes
-- Keep one active exit tunnel.
+- Support 1-10 concurrent exit tunnels, each with an independent proxy port and TUN device.
 - Prefer staying within the same country.
 - Switch only on failure or policy trigger.
 - Separate discovery, pool and policy layers.
